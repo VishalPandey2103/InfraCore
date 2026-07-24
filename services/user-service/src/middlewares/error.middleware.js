@@ -1,5 +1,10 @@
-// error.middleware.js (placeholder)
-module.exports = (err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: 'Internal Server Error' });
+const errorHandler = (err, req, res, next) => {
+    const statusCode = err.statusCode || 500;
+
+    res.status(statusCode).json({
+        success: false,
+        message: err.message || "Internal Server Error",
+    });
 };
+
+module.exports = errorHandler;

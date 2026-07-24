@@ -1,25 +1,33 @@
 const User = require("../models/user.model");
-const hashPassword = require("../utils/hashPassword");
+const comparePassword = require("../utils/comparePassword");
+const generateToken = require("../utils/generateToken");
 
-const register = async ({ name, email, password, role }) => {
-    const existingUser = await User.findOne({ email });
+// ...
 
-    if (existingUser) {
-        throw new Error("User already exists");
+const login = async ({ email, password }) => {
+    const user = await User.findOne({ email });
+
+    if (!user) {
+        throw new Error("Invalid email or password");
     }
 
-    const hashedPassword = await hashPassword(password);
+    const isMatch = await comparePassword(password, user.password);
 
-    const user = await User.create({
-        name,
-        email,
-        password: hashedPassword,
-        role,
+    if (!isMatch) {
+        throw new Error("Invalid email or password");
+    }
+
+    const token = generateToken({
+        id: user._id,
+        role: user.role,
     });
 
-    return user;
+    return {
+        user,
+        token,
+    };
 };
 
 module.exports = {
-    register,
+    login,
 };
