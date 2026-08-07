@@ -1,2 +1,7 @@
-// notFound.middleware.js (placeholder)
-module.exports = (req, res) => res.status(404).json({ error: 'Not Found' });
+const AppError = require("../utils/appError");
+
+const notFound = (req, res, next) => {
+    next(new AppError("Route not found", 404));
+};
+
+module.exports = notFound;
