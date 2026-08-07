@@ -3,3 +3,6 @@
 **/.env
 **/.env.*
 !.env.example
+
+# Local-only notes, never pushed
+Learning/
