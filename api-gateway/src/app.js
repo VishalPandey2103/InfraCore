@@ -1,6 +1,6 @@
 const express = require("express");
 
-const routes = require("./routes");
+const healthRoutes = require("./routes/healthRoutes");
 const notFound = require("./middlewares/notFoundMiddleware");
 const errorHandler = require("./middlewares/errorMiddleware");
 
@@ -8,7 +8,7 @@ const app = express();
 
 app.use(express.json());
 
-app.use("/api/v1", routes);
+app.use("/health", healthRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

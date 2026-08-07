@@ -5,6 +5,4 @@ const health = (req, res) => {
     });
 };
 
-module.exports = {
-    health,
-};
+module.exports = { health };
