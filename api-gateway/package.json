@@ -1,9 +1,6 @@
 {
   "name": "api-gateway",
   "version": "1.0.0",
-  "description": "API Gateway for Campus Infrastructure Cloud",
-  "license": "ISC",
-  "author": "",
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
@@ -11,11 +8,12 @@
     "dev": "nodemon src/server.js"
   },
   "dependencies": {
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "http-proxy-middleware": "^3.0.0",
     "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.4"
   }
 }
