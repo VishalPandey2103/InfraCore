@@ -19,6 +19,10 @@ services.forEach((svc) => {
     const proxy = createProxyMiddleware({
         target: svc.target,
         changeOrigin: true,
+        // app.use(prefix, ...) strips the prefix from req.url, but the
+        // downstream services mount their routers at the full /api/v1/... path.
+        // Put the prefix back before forwarding.
+        pathRewrite: (path) => `${svc.prefix}${path}`,
         on: {
             proxyReq: (proxyReq, req) => {
                 if (req.user) {
