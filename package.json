@@ -1,5 +1,13 @@
 {
-  "dependencies": {
-    "dotenv": "^17.4.2"
+  "name": "infracore",
+  "version": "1.0.0",
+  "description": "Distributed microservices platform for managing shared organizational assets",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n user,inventory,booking,notification,gateway -c blue,green,magenta,yellow,cyan \"npm --prefix services/user-service run dev\" \"npm --prefix services/inventory-service run dev\" \"npm --prefix services/booking-service run dev\" \"npm --prefix services/notification-service run dev\" \"npm --prefix api-gateway run dev\"",
+    "install:all": "npm install && npm --prefix services/user-service install && npm --prefix services/inventory-service install && npm --prefix services/booking-service install && npm --prefix services/notification-service install && npm --prefix api-gateway install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
   }
 }

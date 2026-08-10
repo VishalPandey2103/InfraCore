@@ -1,8 +1,23 @@
-**/node_modules/
+# dependencies
+node_modules/
 
-**/.env
-**/.env.*
+# env
+.env
+.env.local
 !.env.example
+
+# logs
+*.log
+npm-debug.log*
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+
+# build
+dist/
+build/
 
 # Local-only notes, never pushed
 Learning/
