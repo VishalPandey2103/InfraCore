@@ -1,0 +1,396 @@
+{
+  "info": {
+    "_postman_id": "infracore-manual-tests",
+    "name": "InfraCore API",
+    "description": "Every InfraCore endpoint, one request each, with sample data you can edit.\n\nEdit the body, hit Send, look at the response. Nothing runs automatically.\n\nOnly two things happen for you:\n  - Login saves the token into {{token}}\n  - Every request sends 'Authorization: Bearer {{token}}'\n\nSo after you log in as someone, every request below acts as that person.\nTo switch user, just log in again as someone else.\n\nFill in {{itemId}} / {{bookingId}} / {{userId}} yourself by copying the _id\nfrom a response into the environment (the eye icon, top right).\n\nSee tests/README.md for the order to click through.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "0. Health",
+      "description": "Is everything up? No login needed.",
+      "item": [
+        {
+          "name": "Gateway health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "description": "Expect: {\"success\": true, \"message\": \"API Gateway is healthy\"}",
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "User service health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "description": "Talks to port 4000 directly, bypassing the gateway.",
+            "url": { "raw": "http://localhost:4000/health", "host": ["http://localhost:4000"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "Inventory service health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://localhost:4001/health", "host": ["http://localhost:4001"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "Booking service health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://localhost:4002/health", "host": ["http://localhost:4002"], "path": ["health"] }
+          }
+        },
+        {
+          "name": "Notification service health",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "http://localhost:4003/health", "host": ["http://localhost:4003"], "path": ["health"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "1. Auth",
+      "description": "Public. No token needed.",
+      "item": [
+        {
+          "name": "Register",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// Saves the new user's id so you can use {{userId}} later.",
+            "if (pm.response.code === 201) {",
+            "    pm.environment.set('userId', pm.response.json().data.user.id);",
+            "    console.log('Saved userId:', pm.environment.get('userId'));",
+            "}"
+          ] } }],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Everyone is created as STUDENT. Password must be 8+ characters.\n\nChange the email each time - duplicates return 409.\n\nExpect: 201 with a user object and a token.\nSaves the new id into {{userId}}.",
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Rahul Sharma\",\n  \"email\": \"rahul@test.com\",\n  \"password\": \"password123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "register"] }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// Saves the token so every other request is authenticated as this user.",
+            "if (pm.response.code === 200) {",
+            "    const d = pm.response.json().data;",
+            "    pm.environment.set('token', d.token);",
+            "    console.log('Logged in as', d.user.email, '| role:', d.user.role);",
+            "}"
+          ] } }],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Saves the token into {{token}}. Everything else in this collection uses it.\n\nTo act as a different user, just run this again with their email.\n\nIMPORTANT: the role is baked into the token. If you promote someone to\nRESOURCE_MANAGER, they must log in AGAIN before the new role takes effect.\n\nExpect: 200 with a token. Wrong password gives 401.",
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"rahul@test.com\",\n  \"password\": \"password123\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "v1", "auth", "login"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "2. Users",
+      "description": "All need a token.",
+      "item": [
+        {
+          "name": "Get my profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user.\n\nExpect: 200 with your own name, email and role.",
+            "url": { "raw": "{{baseUrl}}/api/v1/users/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "me"] }
+          }
+        },
+        {
+          "name": "Update my profile",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Any logged-in user. Send name, email, or both.\n\nExpect: 200 with the updated user.\nAn empty body {} gives 400.",
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Rahul S Sharma\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "me"] }
+          }
+        },
+        {
+          "name": "List all users (ADMIN only)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "ADMIN only. Log in as admin@infracore.test first.\n\nExpect: 200 with an array.\nAs a STUDENT you get 403.",
+            "url": { "raw": "{{baseUrl}}/api/v1/users", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users"] }
+          }
+        },
+        {
+          "name": "Get user by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Yourself, or anyone if you are ADMIN.\n\nPaste a user id into {{userId}} first.\nAsking for someone else's id as a STUDENT gives 403.",
+            "url": { "raw": "{{baseUrl}}/api/v1/users/{{userId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "{{userId}}"] }
+          }
+        },
+        {
+          "name": "Change a user's role (ADMIN only)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "ADMIN only. This is how you create a RESOURCE_MANAGER.\n\nrole must be STUDENT, RESOURCE_MANAGER, or ADMIN - anything else gives 400.\n\nAfter this, that user must LOG IN AGAIN to get a token with the new role.",
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"RESOURCE_MANAGER\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/users/{{userId}}/role", "host": ["{{baseUrl}}"], "path": ["api", "v1", "users", "{{userId}}", "role"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "3. Inventory",
+      "description": "Reading is open to any logged-in user. Writing needs RESOURCE_MANAGER or ADMIN.",
+      "item": [
+        {
+          "name": "Create item (MANAGER/ADMIN)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "// Saves the new item's id so you can book it straight away.",
+            "if (pm.response.code === 201) {",
+            "    pm.environment.set('itemId', pm.response.json().data._id);",
+            "    console.log('Saved itemId:', pm.environment.get('itemId'));",
+            "}"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN. As a STUDENT you get 403.\n\nname, category and department are required (2+ chars each).\nNew items start with isAvailable: true.\n\nSaves the new id into {{itemId}}.",
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"Projector\",\n  \"category\": \"AV Equipment\",\n  \"department\": \"CSE\",\n  \"description\": \"Full HD, ceiling mount\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
+          }
+        },
+        {
+          "name": "List all items",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user.\n\nExpect: 200 with an array of items.",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
+          }
+        },
+        {
+          "name": "Get item by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user.\n\nUseful for checking isAvailable before and after approving a booking.",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
+          }
+        },
+        {
+          "name": "Update item (MANAGER/ADMIN)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN.\n\nYou can send: name, category, department, description, condition.\nAn empty body {} gives 400.",
+            "body": { "mode": "raw", "raw": "{\n  \"condition\": \"FAIR\",\n  \"description\": \"Lamp replaced Jan 2026\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
+          }
+        },
+        {
+          "name": "Set availability (MANAGER/ADMIN)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN. Manual override.\n\nisAvailable must be a real boolean - the string \"true\" gives 400.\n\nNormally the booking service flips this for you on approve/return.",
+            "body": { "mode": "raw", "raw": "{\n  \"isAvailable\": true\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}/availability", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}", "availability"] }
+          }
+        },
+        {
+          "name": "Delete item (MANAGER/ADMIN)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "description": "RESOURCE_MANAGER or ADMIN.\n\nExpect: 200. As a STUDENT you get 403.",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "4. Bookings",
+      "description": "Students book. Managers approve, reject and mark returned.",
+      "item": [
+        {
+          "name": "Create booking (STUDENT only)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "if (pm.response.code === 201) {",
+            "    pm.environment.set('bookingId', pm.response.json().data._id);",
+            "    console.log('Saved bookingId:', pm.environment.get('bookingId'));",
+            "}"
+          ] } }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "STUDENT only. A manager gets 403.\n\nBehind the scenes booking-service calls inventory-service to check the item\nexists and is available, then publishes BOOKING_CREATED to RabbitMQ.\nWatch the [notification] logs in your terminal.\n\nStarts in PENDING.\n\nUnknown itemId gives 404. An unavailable item gives 400.\nSaves the new id into {{bookingId}}.",
+            "body": { "mode": "raw", "raw": "{\n  \"itemId\": \"{{itemId}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
+          }
+        },
+        {
+          "name": "My bookings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user. Returns only your own bookings.",
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "me"] }
+          }
+        },
+        {
+          "name": "All bookings (MANAGER/ADMIN)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "RESOURCE_MANAGER or ADMIN. As a STUDENT you get 403.",
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
+          }
+        },
+        {
+          "name": "Get booking by id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "The owner, or any manager/admin.\n\nA student reading someone else's booking gets 403.",
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}"] }
+          }
+        },
+        {
+          "name": "Approve (MANAGER/ADMIN)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN. Only works from PENDING.\n\nSide effect: the item is marked unavailable in inventory-service.\nCheck with 'Get item by id' - isAvailable should now be false.\n\nAlso publishes BOOKING_APPROVED to RabbitMQ.",
+            "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Approved, collect from the ECE lab\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "approve"] }
+          }
+        },
+        {
+          "name": "Reject (MANAGER/ADMIN)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN. Only works from PENDING.\n\nREJECTED is final - nothing can follow it.\nThe item stays available, because it was never locked.",
+            "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Already reserved for a lab session\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/reject", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "reject"] }
+          }
+        },
+        {
+          "name": "Mark returned (MANAGER/ADMIN)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "RESOURCE_MANAGER or ADMIN. Only works from APPROVED.\n\nSide effect: the item goes back to isAvailable: true.\n\nTrying this on a PENDING booking gives 400.",
+            "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Returned in good condition\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/return", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "return"] }
+          }
+        },
+        {
+          "name": "Cancel (STUDENT, own booking)",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "STUDENT only, and only your own booking. Only works from PENDING.\n\nSomeone else's booking gives 403.\nA manager trying to cancel also gives 403 - the route is STUDENT-only.",
+            "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"No longer needed\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/cancel", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "cancel"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "5. Things that should fail",
+      "description": "Run these to confirm the guards actually work.",
+      "item": [
+        {
+          "name": "No token -> 401",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "description": "Expect: 401 \"Missing or invalid Authorization header\"",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
+          }
+        },
+        {
+          "name": "Garbage token -> 401",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer not.a.real.jwt" }],
+            "description": "Expect: 401 \"Invalid or expired token\"",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
+          }
+        },
+        {
+          "name": "Faked identity headers -> 401",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [
+              { "key": "x-user-id", "value": "000000000000000000000001" },
+              { "key": "x-user-role", "value": "ADMIN" }
+            ],
+            "description": "The services trust x-user-id and x-user-role, and only the gateway\nis supposed to set them. This proves a client cannot fake them.\n\nExpect: 401.\n\nNote: pointing these same headers straight at http://localhost:4001\nDOES work - which is exactly why the service ports must never be public.",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
+          }
+        },
+        {
+          "name": "Unknown route -> 404",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "description": "Expect: 404 \"Route not found\"",
+            "url": { "raw": "{{baseUrl}}/api/v1/nope", "host": ["{{baseUrl}}"], "path": ["api", "v1", "nope"] }
+          }
+        },
+        {
+          "name": "Book an unavailable item -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Approve a booking first so the item is locked, then run this as a student.\n\nExpect: 400 \"Item is not available\"",
+            "body": { "mode": "raw", "raw": "{\n  \"itemId\": \"{{itemId}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
+          }
+        },
+        {
+          "name": "Illegal status jump -> 400",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Approve a booking, mark it returned, then try to approve it again.\n\nExpect: 400 \"Cannot transition from RETURNED to APPROVED\"",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "approve"] }
+          }
+        }
+      ]
+    }
+  ]
+}
