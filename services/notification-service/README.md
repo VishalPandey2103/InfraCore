@@ -13,7 +13,7 @@ Runs on port **4003** — the HTTP server exists only to expose `/health`.
         │  publish
         ▼
   exchange: infracore.events   (topic, durable)
-        │  routing key BOOKING_*
+        │  bindings: one per event name
         ▼
   queue: notification.bookings (durable)
         │
@@ -45,11 +45,15 @@ Declared on startup in `src/config/rabbitmqConfig.js`:
 |---|---|---|
 | Exchange | `infracore.events` | `topic`, `durable: true` |
 | Queue | `notification.bookings` | `durable: true` |
-| Binding | queue → exchange | routing key `BOOKING_*` |
+| Bindings | queue → exchange | one per event name in `eventNames.js` |
 
-All three are asserted idempotently, so it doesn't matter whether this service or booking-service starts first.
+All of them are asserted idempotently, so it doesn't matter whether this service or booking-service starts first.
 
-The `BOOKING_*` wildcard means new booking events are picked up automatically — a new event type needs a handler here, but no broker reconfiguration.
+Adding a new event type means adding it to `eventNames.js`, writing a handler, and restarting — the binding loop picks it up.
+
+> **Why not one wildcard binding?** The queue was originally bound with `BOOKING_*`, which looks like it should match `BOOKING_CREATED`. It doesn't. Topic-exchange wildcards operate on whole *dot-delimited words*, and `*` is only a wildcard when it stands alone as a word — `BOOKING_*` is a single literal word that matches only a routing key spelled exactly `BOOKING_*`.
+>
+> Nothing reports this. The exchange silently discards messages with no matching binding, so booking-service logged `Published event: BOOKING_CREATED` while this queue sat empty. If you ever want a real wildcard here, switch the routing keys to dotted form (`booking.created`) and bind `booking.*`.
 
 ---
 
@@ -153,7 +157,9 @@ Notification Service running on port 4003
 ## Verifying it works
 
 1. Open the management UI at http://localhost:15672 (`guest` / `guest`).
-2. Find the `notification.bookings` queue and confirm it's bound to `infracore.events` with routing key `BOOKING_*`.
+2. Find the `notification.bookings` queue and confirm it has five bindings to `infracore.events`, one per booking event name.
 3. Create a booking through the gateway and watch the console here.
+
+If bookings succeed but nothing prints, check the bindings first — a missing binding loses messages silently, with no error on either side.
 
 To see durability in action, stop this service, run a booking through, and watch the queue depth climb in the UI. Start it again — the backlog drains immediately. No events are lost while the consumer is down.

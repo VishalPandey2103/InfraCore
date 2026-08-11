@@ -17,6 +17,7 @@ The domain is a university asset-borrowing system, but the architecture is domai
 - [Setup](#setup)
 - [Environment variables](#environment-variables)
 - [API reference](#api-reference)
+- [Testing](#testing)
 - [Roles and permissions](#roles-and-permissions)
 - [Booking state machine](#booking-state-machine)
 - [Events](#events)
@@ -44,7 +45,7 @@ Five Node processes. One public entry point. Three private databases. One messag
               │  2. decode -> req.user = { id, role }      │
               │  3. inject  x-user-id / x-user-role        │
               │  4. strip   Authorization header           │
-              │  5. proxy by path prefix                   │
+              │  5. restore path, then proxy by prefix     │
               └───┬──────────────┬───────────────┬─────────┘
                   │              │               │
    /api/v1/auth   │              │ /api/v1/      │ /api/v1/
@@ -71,7 +72,7 @@ Five Node processes. One public entry point. Three private databases. One messag
         └────────────────┘ └────────────────┘   │  type: topic, durable │
                                                 └───────────┬───────────┘
         ┌────────────────┐                                  │ routing key
-        │  MongoDB Atlas │◀────── booking-service           │ BOOKING_*
+        │  MongoDB Atlas │◀────── booking-service           │ one per event
         │ booking-service│                                  ▼
         └────────────────┘                   ┌──────────────────────────┐
                                              │   queue:                 │
@@ -117,7 +118,8 @@ A full trace of `POST /api/v1/bookings` — the most involved path in the system
       • sets  x-user-id:   665a...
       • sets  x-user-role: STUDENT
       • removes Authorization           ← raw JWT never leaves the edge
-      • forwards to http://localhost:4002
+      • pathRewrite restores the prefix Express stripped
+      • forwards to http://localhost:4002/api/v1/bookings
                 │
                 ▼
  4. Booking Service  (authMiddleware — gateway trust)
@@ -189,7 +191,7 @@ The booking response does **not** wait on step 11. If notification-service is of
                               ▼
               exchange: infracore.events  (topic, durable)
                               │
-                    routing key: BOOKING_*
+              bindings: one per event name
                               │
                               ▼
               queue: notification.bookings  (durable)
@@ -223,7 +225,11 @@ Every message carries the same envelope:
 }
 ```
 
-The exchange is a **topic** exchange, so adding a second consumer later — an audit service, an analytics sink — is a matter of binding a new queue to `BOOKING_*`. No producer change required.
+The exchange is a **topic** exchange, so adding a second consumer later — an audit service, an analytics sink — is a matter of binding a new queue to the same routing keys. No producer change required.
+
+> **A trap worth knowing.** Topic-exchange wildcards match whole *dot-delimited words*. A binding of `BOOKING_*` does **not** match the routing key `BOOKING_CREATED`, because `*` is only a wildcard when it stands alone as a word — `BOOKING_*` is just one literal word. The queue was originally bound that way, and every message was silently discarded: booking-service logged `Published event: BOOKING_CREATED`, the queue stayed at zero, and nothing errored anywhere.
+>
+> The fix was to bind each event name explicitly. The alternative is dotted routing keys (`booking.created`, bound as `booking.*`), which is the idiomatic AMQP shape and what you'd reach for with more event types.
 
 ---
 
@@ -232,7 +238,7 @@ The exchange is a **topic** exchange, so adding a second consumer later — an a
 | Service | Port | Database | Owns | Auth model |
 |---|---|---|---|---|
 | [API Gateway](api-gateway/) | 3000 | — | Routing, JWT verification, header injection | Verifies JWT |
-| [User Service](services/user-service/) | 4000 | `user-service` | Identity, auth, profiles, roles | Verifies JWT itself |
+| [User Service](services/user-service/) | 4000 | `user-service` | Identity, auth, profiles, roles | Trusts gateway headers (signs tokens) |
 | [Inventory Service](services/inventory-service/) | 4001 | `inventory-service` | Item catalog, availability | Trusts gateway headers |
 | [Booking Service](services/booking-service/) | 4002 | `booking-service` | Booking lifecycle, event publishing | Trusts gateway headers |
 | [Notification Service](services/notification-service/) | 4003 | — | Consuming events, sending notifications | None (no business routes) |
@@ -469,6 +475,21 @@ Try approving twice to see the state machine reject it:
 
 ---
 
+## Testing
+
+A Postman collection covering every endpoint lives in [`tests/`](tests/), along with a step-by-step walkthrough in [tests/README.md](tests/README.md).
+
+```bash
+node tests/scripts/bootstrap-admin.js     # create the first ADMIN
+node tests/scripts/reset-test-data.js --yes   # wipe test data, keep the admin
+```
+
+Import both files from `tests/postman/` and select the **InfraCore - Local** environment. Login stores the token automatically; every other request reuses it.
+
+There are no automated unit or integration tests yet.
+
+---
+
 ## Roles and permissions
 
 Three roles, stored on the User document and embedded in the JWT payload:
@@ -483,12 +504,15 @@ Three roles, stored on the User document and embedded in the JWT payload:
 
 ### Creating your first admin
 
-There is no bootstrap script by design. Promote the first admin by hand:
+`register` always creates a `STUDENT`, and only an `ADMIN` can change roles — so the first admin is a chicken-and-egg problem that the API cannot solve. It has to be written straight to the database.
 
-1. Register normally through the API.
-2. Open the `user-service` database in MongoDB Atlas.
-3. Edit that user's document: set `role` to `"ADMIN"`.
-4. **Log in again** — the role is baked into the JWT at sign time, so an existing token still carries the old role.
+```bash
+node tests/scripts/bootstrap-admin.js
+```
+
+Creates (or resets) `admin@infracore.test` / `Admin@12345`. To do it by hand instead: register through the API, open the `user-service` database in Atlas, and set that user's `role` to `"ADMIN"`.
+
+Either way — **log in again afterwards.** The role is baked into the JWT at sign time, so an existing token still carries the old role.
 
 After that, admins promote everyone else via `PATCH /api/v1/users/:id/role`.
 
@@ -603,6 +627,11 @@ InfraCore/
 │   ├── booking-service/
 │   └── notification-service/
 │
+├── tests/
+│   ├── postman/             collection + environment
+│   ├── scripts/             bootstrap-admin, reset-test-data
+│   └── README.md            manual test walkthrough
+│
 ├── .env.example             documents every service's vars
 ├── package.json             concurrently orchestration only
 └── README.md
@@ -632,7 +661,9 @@ src/
 
 **JWT verified once, at the edge.** Downstream services read `x-user-id` and `x-user-role` and trust them. The gateway strips the incoming `Authorization` header before proxying, so the raw token never travels past the perimeter. In production this trust boundary would be enforced by the network — downstream ports never exposed publicly.
 
-*User-service is the one exception* — it verifies the JWT itself, because it's useful to call directly during development and it's the service that issues tokens in the first place.
+This applies to *all three* downstream services, user-service included. It used to verify the JWT itself, on the reasoning that it owns the signing secret anyway — but that made it unreachable through the gateway, which strips the very header it was reading. Every `/api/v1/users/*` route returned 401. Owning the secret for *signing* at login is a separate concern from verifying on *every request*; only the edge does the latter.
+
+**The gateway rewrites the path before proxying.** `app.use("/api/v1/users", proxy)` makes Express strip the mount prefix from `req.url`, so the proxy would forward `/me` while user-service mounts its router at `/api/v1/users/me`. A `pathRewrite` puts the prefix back. Without it every proxied request 404s while direct-to-service calls work perfectly — a confusing failure, because the gateway looks fine and the service looks fine.
 
 **No shared utility library.** `apiResponse.js`, `appError.js`, and `asyncHandler.js` are copy-pasted into every service. That duplication is intentional: a shared package means every service redeploys when it changes, and coordinated releases are the thing microservices are supposed to eliminate.
 

@@ -69,16 +69,25 @@ Every read excludes the password field via `.select("-password")`.
 
 ---
 
-## Auth model — the exception in this system
+## Auth model
 
-Every other downstream service trusts `x-user-id` / `x-user-role` headers set by the gateway. **User-service verifies the JWT itself**, in `src/middlewares/authMiddleware.js`.
+Like every other downstream service, user-service trusts the `x-user-id` / `x-user-role` headers set by the gateway. `src/middlewares/authMiddleware.js` does **not** verify the JWT.
 
-Two reasons:
+Signing and verifying are separate concerns, and this service only does the first:
 
-1. It's the service that *issues* tokens, so it already owns the secret.
-2. It's the one service you routinely call directly during development, before the gateway is even involved.
+| | Where |
+|---|---|
+| **Signs** tokens at login | here — it owns `JWT_SECRET` |
+| **Verifies** tokens on each request | the gateway, and only the gateway |
 
-This means user-service endpoints need a real `Authorization: Bearer <token>` header — identity headers alone won't authenticate you here.
+This service originally did verify its own tokens, on the reasoning that it already had the secret. That broke every `/api/v1/users/*` route: the gateway deliberately strips the `Authorization` header before proxying, so the header this middleware was reading never arrived, and every request came back 401. Calling port 4000 directly worked fine, which made it look like a gateway bug.
+
+Calling this service directly during development therefore needs the identity headers, not a token:
+
+```bash
+curl http://localhost:4000/api/v1/users/me \
+  -H "x-user-id: 665a..." -H "x-user-role: STUDENT"
+```
 
 `roleMiddleware` is variadic and composes on top:
 
@@ -116,7 +125,9 @@ Validators are pure functions returning `{ valid, errors }`. The controller thro
 
 ### Creating the first admin
 
-There's no bootstrap script. Register through the API, open the `user-service` database in Atlas, set that user's `role` to `"ADMIN"`, then **log in again** — the role is embedded in the JWT when it's signed, so an existing token still carries the old value.
+`register` always creates a `STUDENT` and only an `ADMIN` can change roles, so the first admin cannot be created through the API — run `node tests/scripts/bootstrap-admin.js` from the project root, which writes it straight to the database. By hand: register through the API, open the `user-service` database in Atlas, and set that user's `role` to `"ADMIN"`.
+
+Either way, **log in again** — the role is embedded in the JWT when it's signed, so an existing token still carries the old value.
 
 After that, admins promote others through `PATCH /api/v1/users/:id/role`.
 
