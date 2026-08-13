@@ -26,13 +26,18 @@ const itemSchema = new mongoose.Schema(
             enum: ["NEW", "GOOD", "FAIR", "POOR"],
             default: "GOOD",
         },
-        isAvailable: {
-            type: Boolean,
+        isListed: {
+            type: Boolean, // owner-controlled: is the item published for booking?
             default: true,
         },
-        createdBy: {
+        isOnLoan: {
+            type: Boolean, // system-controlled: locked by an approved booking
+            default: false,
+        },
+        ownerId: {
             type: String, // user id from JWT (kept as string, no cross-service ObjectId ref)
             required: true,
+            index: true,
         },
     },
     { timestamps: true }

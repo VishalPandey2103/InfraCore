@@ -1,8 +1,18 @@
 const Item = require("../models/itemModel");
 const AppError = require("../utils/appError");
 
-const createItem = async (data, createdBy) => {
-    const item = await Item.create({ ...data, createdBy });
+// Owner-or-staff guard: the publisher manages their own item;
+// ADMIN and RESOURCE_MANAGER can manage any item.
+const assertCanManage = (item, actor) => {
+    const isOwner = item.ownerId === actor.id;
+    const isStaff = actor.role === "ADMIN" || actor.role === "RESOURCE_MANAGER";
+    if (!isOwner && !isStaff) {
+        throw new AppError("Forbidden: you do not own this item", 403);
+    }
+};
+
+const createItem = async (data, ownerId) => {
+    const item = await Item.create({ ...data, ownerId });
     return item;
 };
 
@@ -18,32 +28,52 @@ const listItems = async (filters = {}) => {
     const query = {};
     if (filters.category) query.category = filters.category;
     if (filters.department) query.department = filters.department;
-    if (filters.available === "true") query.isAvailable = true;
-    if (filters.available === "false") query.isAvailable = false;
+    // "available" means bookable: listed by the owner and not out on loan
+    if (filters.available === "true") {
+        query.isListed = true;
+        query.isOnLoan = false;
+    }
+    if (filters.available === "false") {
+        query.$or = [{ isListed: false }, { isOnLoan: true }];
+    }
 
     return await Item.find(query).sort({ createdAt: -1 });
 };
 
-const updateItem = async (id, updates) => {
-    const item = await Item.findByIdAndUpdate(id, { $set: updates }, { new: true });
-    if (!item) {
-        throw new AppError("Item not found", 404);
-    }
+const listMyItems = async (ownerId) => {
+    return await Item.find({ ownerId }).sort({ createdAt: -1 });
+};
+
+const updateItem = async (id, updates, actor) => {
+    const item = await getItemById(id);
+    assertCanManage(item, actor);
+    item.set(updates);
+    await item.save();
     return item;
 };
 
-const deleteItem = async (id) => {
-    const item = await Item.findByIdAndDelete(id);
-    if (!item) {
-        throw new AppError("Item not found", 404);
-    }
+const deleteItem = async (id, actor) => {
+    const item = await getItemById(id);
+    assertCanManage(item, actor);
+    await item.deleteOne();
     return item;
 };
 
-const setAvailability = async (id, isAvailable) => {
+// Owner-facing toggle: publish/delist the item.
+const setListing = async (id, isListed, actor) => {
+    const item = await getItemById(id);
+    assertCanManage(item, actor);
+    item.isListed = isListed;
+    await item.save();
+    return item;
+};
+
+// Internal (service-to-service) only: lock/unlock the item for a loan.
+// No ownership check — the route is guarded by the internal-auth middleware.
+const setLoanStatus = async (id, isOnLoan) => {
     const item = await Item.findByIdAndUpdate(
         id,
-        { $set: { isAvailable } },
+        { $set: { isOnLoan } },
         { new: true }
     );
     if (!item) {
@@ -56,7 +86,9 @@ module.exports = {
     createItem,
     getItemById,
     listItems,
+    listMyItems,
     updateItem,
     deleteItem,
-    setAvailability,
+    setListing,
+    setLoanStatus,
 };
