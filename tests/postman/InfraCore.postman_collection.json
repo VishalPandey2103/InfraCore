@@ -164,10 +164,10 @@
 
     {
       "name": "3. Inventory",
-      "description": "Reading is open to any logged-in user. Writing needs RESOURCE_MANAGER or ADMIN.",
+      "description": "Any logged-in user can publish items. Each item is managed by its owner; RESOURCE_MANAGER and ADMIN can manage any item.",
       "item": [
         {
-          "name": "Create item (MANAGER/ADMIN)",
+          "name": "Publish item (any user)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "// Saves the new item's id so you can book it straight away.",
             "if (pm.response.code === 201) {",
@@ -178,7 +178,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN. As a STUDENT you get 403.\n\nname, category and department are required (2+ chars each).\nNew items start with isAvailable: true.\n\nSaves the new id into {{itemId}}.",
+            "description": "Any logged-in user - the caller becomes the item's owner.\n\nname, category and department are required (2+ chars each).\nNew items start with isListed: true, isOnLoan: false.\n\nSaves the new id into {{itemId}}.",
             "body": { "mode": "raw", "raw": "{\n  \"name\": \"Projector\",\n  \"category\": \"AV Equipment\",\n  \"department\": \"CSE\",\n  \"description\": \"Full HD, ceiling mount\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/inventory", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory"] }
           }
@@ -193,40 +193,49 @@
           }
         },
         {
+          "name": "My published items",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user. Returns only the items you published.",
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/mine", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "mine"] }
+          }
+        },
+        {
           "name": "Get item by id",
           "request": {
             "method": "GET",
             "header": [],
-            "description": "Any logged-in user.\n\nUseful for checking isAvailable before and after approving a booking.",
+            "description": "Any logged-in user.\n\nUseful for checking isOnLoan before and after approving a booking.",
             "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
           }
         },
         {
-          "name": "Update item (MANAGER/ADMIN)",
+          "name": "Update item (owner / MANAGER / ADMIN)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN.\n\nYou can send: name, category, department, description, condition.\nAn empty body {} gives 400.",
+            "description": "The item's owner, RESOURCE_MANAGER or ADMIN. Anyone else gets 403.\n\nYou can send: name, category, department, description, condition.\nOther fields (ownerId, isListed, isOnLoan) are silently stripped.\nAn empty body {} gives 400.",
             "body": { "mode": "raw", "raw": "{\n  \"condition\": \"FAIR\",\n  \"description\": \"Lamp replaced Jan 2026\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
           }
         },
         {
-          "name": "Set availability (MANAGER/ADMIN)",
+          "name": "List/delist item (owner / MANAGER / ADMIN)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN. Manual override.\n\nisAvailable must be a real boolean - the string \"true\" gives 400.\n\nNormally the booking service flips this for you on approve/return.",
-            "body": { "mode": "raw", "raw": "{\n  \"isAvailable\": true\n}" },
+            "description": "The item's owner, RESOURCE_MANAGER or ADMIN. Anyone else gets 403.\n\nisListed must be a real boolean - the string \"true\" gives 400.\n\nThis is the owner's manual toggle. The loan lock (isOnLoan) is separate\nand is flipped only by booking-service on approve/return.",
+            "body": { "mode": "raw", "raw": "{\n  \"isListed\": true\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}/availability", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}", "availability"] }
           }
         },
         {
-          "name": "Delete item (MANAGER/ADMIN)",
+          "name": "Delete item (owner / MANAGER / ADMIN)",
           "request": {
             "method": "DELETE",
             "header": [],
-            "description": "RESOURCE_MANAGER or ADMIN.\n\nExpect: 200. As a STUDENT you get 403.",
+            "description": "The item's owner, RESOURCE_MANAGER or ADMIN.\n\nExpect: 200. Anyone else gets 403.",
             "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}"] }
           }
         }
@@ -235,10 +244,10 @@
 
     {
       "name": "4. Bookings",
-      "description": "Students book. Managers approve, reject and mark returned.",
+      "description": "Any user books another user's item. The item's OWNER approves, rejects and marks returned (ADMIN can too). Log in as different users to play each side.",
       "item": [
         {
-          "name": "Create booking (STUDENT only)",
+          "name": "Create booking (any user)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "if (pm.response.code === 201) {",
             "    pm.environment.set('bookingId', pm.response.json().data._id);",
@@ -248,7 +257,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "STUDENT only. A manager gets 403.\n\nBehind the scenes booking-service calls inventory-service to check the item\nexists and is available, then publishes BOOKING_CREATED to RabbitMQ.\nWatch the [notification] logs in your terminal.\n\nStarts in PENDING.\n\nUnknown itemId gives 404. An unavailable item gives 400.\nSaves the new id into {{bookingId}}.",
+            "description": "Any logged-in user - EXCEPT the item's owner (booking your own item\ngives 400).\n\nBehind the scenes booking-service calls inventory-service to check the item\nexists and is bookable (isListed && !isOnLoan), then publishes\nBOOKING_CREATED to RabbitMQ - both the borrower and the owner get a\nnotification. Watch the [notification] logs in your terminal.\n\nStarts in PENDING.\n\nUnknown itemId gives 404. An unavailable item gives 400.\nSaves the new id into {{bookingId}}.",
             "body": { "mode": "raw", "raw": "{\n  \"itemId\": \"{{itemId}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
           }
@@ -258,8 +267,17 @@
           "request": {
             "method": "GET",
             "header": [],
-            "description": "Any logged-in user. Returns only your own bookings.",
+            "description": "Any logged-in user. Returns the bookings you made as a borrower.",
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/me", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "me"] }
+          }
+        },
+        {
+          "name": "Requests on my items (owner inbox)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "description": "Any logged-in user. Returns bookings other people made on items YOU\npublished - your approval inbox.\n\nLog in as the item's owner to see the request created above.",
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/owner", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "owner"] }
           }
         },
         {
@@ -276,46 +294,46 @@
           "request": {
             "method": "GET",
             "header": [],
-            "description": "The owner, or any manager/admin.\n\nA student reading someone else's booking gets 403.",
+            "description": "The borrower, the item's owner, or any manager/admin.\n\nAnyone else gets 403.",
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}"] }
           }
         },
         {
-          "name": "Approve (MANAGER/ADMIN)",
+          "name": "Approve (item owner / ADMIN)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN. Only works from PENDING.\n\nSide effect: the item is marked unavailable in inventory-service.\nCheck with 'Get item by id' - isAvailable should now be false.\n\nAlso publishes BOOKING_APPROVED to RabbitMQ.",
+            "description": "The item's OWNER or ADMIN - log in as the user who published the item.\nAnyone else (including the borrower) gets 403. Only works from PENDING.\n\nSide effect: the item is locked in inventory-service.\nCheck with 'Get item by id' - isOnLoan should now be true.\n\nAlso publishes BOOKING_APPROVED to RabbitMQ.",
             "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Approved, collect from the ECE lab\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "approve"] }
           }
         },
         {
-          "name": "Reject (MANAGER/ADMIN)",
+          "name": "Reject (item owner / ADMIN)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN. Only works from PENDING.\n\nREJECTED is final - nothing can follow it.\nThe item stays available, because it was never locked.",
+            "description": "The item's OWNER or ADMIN. Only works from PENDING.\n\nREJECTED is final - nothing can follow it.\nThe item stays bookable, because it was never locked.",
             "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Already reserved for a lab session\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/reject", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "reject"] }
           }
         },
         {
-          "name": "Mark returned (MANAGER/ADMIN)",
+          "name": "Mark returned (item owner / ADMIN)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "RESOURCE_MANAGER or ADMIN. Only works from APPROVED.\n\nSide effect: the item goes back to isAvailable: true.\n\nTrying this on a PENDING booking gives 400.",
+            "description": "The item's OWNER or ADMIN - the owner confirms they got the item back.\nThe borrower cannot self-declare a return. Only works from APPROVED.\n\nSide effect: the item goes back to isOnLoan: false.\n\nTrying this on a PENDING booking gives 400.",
             "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"Returned in good condition\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/return", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "return"] }
           }
         },
         {
-          "name": "Cancel (STUDENT, own booking)",
+          "name": "Cancel (borrower, own booking)",
           "request": {
             "method": "PATCH",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "STUDENT only, and only your own booking. Only works from PENDING.\n\nSomeone else's booking gives 403.\nA manager trying to cancel also gives 403 - the route is STUDENT-only.",
+            "description": "The borrower only (or ADMIN), and only your own booking.\nOnly works from PENDING.\n\nSomeone else's booking gives 403 - even the item's owner cannot cancel\non the borrower's behalf (they should reject instead).",
             "body": { "mode": "raw", "raw": "{\n  \"remarks\": \"No longer needed\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/cancel", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "cancel"] }
           }
@@ -375,9 +393,39 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "description": "Approve a booking first so the item is locked, then run this as a student.\n\nExpect: 400 \"Item is not available\"",
+            "description": "Approve a booking first so the item is on loan (or have the owner delist\nit), then run this as another user.\n\nExpect: 400 \"Item is not available\"",
             "body": { "mode": "raw", "raw": "{\n  \"itemId\": \"{{itemId}}\"\n}" },
             "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
+          }
+        },
+        {
+          "name": "Book your own item -> 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Log in as the user who PUBLISHED {{itemId}}, then run this.\n\nExpect: 400 \"You cannot book your own item\"",
+            "body": { "mode": "raw", "raw": "{\n  \"itemId\": \"{{itemId}}\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings"] }
+          }
+        },
+        {
+          "name": "Approve someone else's item -> 403",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "Log in as the BORROWER (or any user who is not the item's owner or admin)\nand try to approve the booking.\n\nExpect: 403 \"Only the item's owner can manage this booking\"",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/bookings/{{bookingId}}/approve", "host": ["{{baseUrl}}"], "path": ["api", "v1", "bookings", "{{bookingId}}", "approve"] }
+          }
+        },
+        {
+          "name": "Loan endpoint without secret -> 403",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "description": "The internal loan-lock endpoint is only for booking-service, which\nauthenticates with x-internal-secret. The gateway strips that header\nfrom external requests, so even a valid JWT cannot reach it.\n\nExpect: 403 \"Forbidden: internal endpoint\"",
+            "body": { "mode": "raw", "raw": "{\n  \"isOnLoan\": true\n}" },
+            "url": { "raw": "{{baseUrl}}/api/v1/inventory/{{itemId}}/loan", "host": ["{{baseUrl}}"], "path": ["api", "v1", "inventory", "{{itemId}}", "loan"] }
           }
         },
         {

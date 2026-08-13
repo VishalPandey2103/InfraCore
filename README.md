@@ -128,8 +128,8 @@ A full trace of `POST /api/v1/bookings` — the most involved path in the system
       • req.user = { id, role }
                 │
                 ▼
- 5. Booking Service  (roleMiddleware)
-      • route requires role("STUDENT")  →  403 otherwise
+ 5. Booking Service  (authMiddleware only)
+      • any authenticated user may book — ownership rules run in the service
                 │
                 ▼
  6. Booking Service  (controller)
@@ -146,9 +146,10 @@ A full trace of `POST /api/v1/bookings` — the most involved path in the system
                 └─ 200      →  item
                 │
                 ▼
- 8. Booking Service  (domain rule)
-      • item.isAvailable === false  →  AppError("Item is not available", 400)
-      • otherwise persist Booking { status: "PENDING", itemName: <snapshot> }
+ 8. Booking Service  (domain rules)
+      • item.ownerId === caller         →  AppError("You cannot book your own item", 400)
+      • !item.isListed || item.isOnLoan →  AppError("Item is not available", 400)
+      • otherwise persist Booking { status: "PENDING", itemName, ownerId: <snapshots> }
                 │
                 ▼
  9. Booking Service  →  RabbitMQ                 [ ASYNCHRONOUS ]
@@ -393,11 +394,13 @@ Everything below goes through the gateway on port 3000.
 | Method | Path | Access |
 |---|---|---|
 | `GET` | `/api/v1/inventory` | any authenticated user |
+| `GET` | `/api/v1/inventory/mine` | any authenticated user |
 | `GET` | `/api/v1/inventory/:id` | any authenticated user |
-| `POST` | `/api/v1/inventory` | `RESOURCE_MANAGER`, `ADMIN` |
-| `PATCH` | `/api/v1/inventory/:id` | `RESOURCE_MANAGER`, `ADMIN` |
-| `DELETE` | `/api/v1/inventory/:id` | `RESOURCE_MANAGER`, `ADMIN` |
-| `PATCH` | `/api/v1/inventory/:id/availability` | `RESOURCE_MANAGER`, `ADMIN` |
+| `POST` | `/api/v1/inventory` | any authenticated user (caller becomes owner) |
+| `PATCH` | `/api/v1/inventory/:id` | item owner, `RESOURCE_MANAGER`, `ADMIN` |
+| `DELETE` | `/api/v1/inventory/:id` | item owner, `RESOURCE_MANAGER`, `ADMIN` |
+| `PATCH` | `/api/v1/inventory/:id/availability` | item owner, `RESOURCE_MANAGER`, `ADMIN` |
+| `PATCH` | `/api/v1/inventory/:id/loan` | internal (booking-service, shared secret) |
 
 Filters on the list endpoint: `?category=`, `?department=`, `?available=true|false`
 
@@ -405,14 +408,15 @@ Filters on the list endpoint: `?category=`, `?department=`, `?available=true|fal
 
 | Method | Path | Access |
 |---|---|---|
-| `POST` | `/api/v1/bookings` | `STUDENT` |
+| `POST` | `/api/v1/bookings` | any authenticated user (not on own items) |
 | `GET` | `/api/v1/bookings/me` | any authenticated user |
+| `GET` | `/api/v1/bookings/owner` | any authenticated user (requests on own items) |
 | `GET` | `/api/v1/bookings` | `RESOURCE_MANAGER`, `ADMIN` |
-| `GET` | `/api/v1/bookings/:id` | owner or `RESOURCE_MANAGER`/`ADMIN` |
-| `PATCH` | `/api/v1/bookings/:id/approve` | `RESOURCE_MANAGER`, `ADMIN` |
-| `PATCH` | `/api/v1/bookings/:id/reject` | `RESOURCE_MANAGER`, `ADMIN` |
-| `PATCH` | `/api/v1/bookings/:id/return` | `RESOURCE_MANAGER`, `ADMIN` |
-| `PATCH` | `/api/v1/bookings/:id/cancel` | `STUDENT` (own bookings only) |
+| `GET` | `/api/v1/bookings/:id` | borrower, item owner, or `RESOURCE_MANAGER`/`ADMIN` |
+| `PATCH` | `/api/v1/bookings/:id/approve` | item owner, `ADMIN` |
+| `PATCH` | `/api/v1/bookings/:id/reject` | item owner, `ADMIN` |
+| `PATCH` | `/api/v1/bookings/:id/return` | item owner, `ADMIN` |
+| `PATCH` | `/api/v1/bookings/:id/cancel` | borrower, `ADMIN` |
 
 ### Health
 
@@ -438,12 +442,12 @@ curl -X POST http://localhost:3000/api/v1/auth/login \
 export STUDENT_TOKEN="<token from the response>"
 ```
 
-Promote a second account to `RESOURCE_MANAGER` (see [Roles](#roles-and-permissions) for how to create the first one), log in as them, and keep that token as `MANAGER_TOKEN`.
+Register a second account the same way and keep its token as `OWNER_TOKEN` — that account will publish the item.
 
 ```bash
-# 3. Manager adds an item to the catalog
+# 3. Owner publishes an item (any user can)
 curl -X POST http://localhost:3000/api/v1/inventory \
-  -H "Authorization: Bearer $MANAGER_TOKEN" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"Dell Latitude 5420","category":"Laptop","department":"CSE"}'
 
@@ -451,22 +455,25 @@ curl -X POST http://localhost:3000/api/v1/inventory \
 curl "http://localhost:3000/api/v1/inventory?available=true" \
   -H "Authorization: Bearer $STUDENT_TOKEN"
 
-# 5. Student books it  →  BOOKING_CREATED fires
+# 5. Student books it  →  BOOKING_CREATED fires (owner + borrower notified)
 curl -X POST http://localhost:3000/api/v1/bookings \
   -H "Authorization: Bearer $STUDENT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"itemId":"<item id from step 4>"}'
 
-# 6. Manager approves  →  BOOKING_APPROVED fires, item locked
+# 6. Owner sees the incoming request, then approves it
+#    →  BOOKING_APPROVED fires, item locked (isOnLoan: true)
+curl http://localhost:3000/api/v1/bookings/owner \
+  -H "Authorization: Bearer $OWNER_TOKEN"
 curl -X PATCH http://localhost:3000/api/v1/bookings/<bookingId>/approve \
-  -H "Authorization: Bearer $MANAGER_TOKEN"
+  -H "Authorization: Bearer $OWNER_TOKEN"
 
-# 7. Manager marks it returned  →  BOOKING_RETURNED fires, item released
+# 7. Owner confirms the return  →  BOOKING_RETURNED fires, item released
 curl -X PATCH http://localhost:3000/api/v1/bookings/<bookingId>/return \
-  -H "Authorization: Bearer $MANAGER_TOKEN"
+  -H "Authorization: Bearer $OWNER_TOKEN"
 ```
 
-Watch the `[notification]` lane in your terminal — three `===== NOTIFICATION =====` blocks appear, one per event.
+Watch the `[notification]` lane in your terminal — `===== NOTIFICATION =====` blocks appear addressed to the borrower and the owner.
 
 Try approving twice to see the state machine reject it:
 ```
@@ -496,9 +503,11 @@ Three roles, stored on the User document and embedded in the JWT payload:
 
 | Role | Can do |
 |---|---|
-| `STUDENT` | Browse inventory, create bookings, cancel own bookings, view own bookings |
-| `RESOURCE_MANAGER` | Everything above, plus manage the item catalog and approve/reject/return any booking |
-| `ADMIN` | Everything above, plus list all users and change any user's role |
+| `STUDENT` | Publish items, manage own items, approve/reject/return bookings **on own items**, book other users' items, cancel own bookings |
+| `RESOURCE_MANAGER` | Everything above, plus manage **any** item in the catalog and view all bookings |
+| `ADMIN` | Everything above, plus drive any booking transition, list all users and change any user's role |
+
+Item ownership is the primary authorization axis: whoever publishes an item (`ownerId`) controls its listing and the booking requests on it. Roles only add moderation powers on top.
 
 `STUDENT` is the default assigned at registration — the register endpoint hard-codes it, so the role cannot be escalated through the signup body.
 
@@ -527,7 +536,7 @@ After that, admins promote everyone else via `PATCH /api/v1/users/:id/role`.
           ┌───────────────┼───────────────┐
           │               │               │
       approve          reject          cancel
-   (mgr/admin)      (mgr/admin)      (student,
+  (owner/admin)    (owner/admin)    (borrower,
           │               │           own only)
           ▼               ▼               ▼
    ┌────────────┐  ┌────────────┐  ┌─────────────┐
@@ -535,7 +544,7 @@ After that, admins promote everyone else via `PATCH /api/v1/users/:id/role`.
    └──────┬─────┘  └────────────┘  └─────────────┘
           │            terminal        terminal
        return
-    (mgr/admin)
+  (owner/admin)
           │
           ▼
    ┌────────────┐
@@ -547,13 +556,15 @@ The transition table lives in `booking-service/src/utils/bookingState.js` and is
 
 Each state stamps its own timestamp field — `approvedAt`, `rejectedAt`, `cancelledAt`, `returnedAt` — so the full history of a booking is readable from the document without an audit table.
 
-**Item availability follows the state machine:**
+**The item's loan lock follows the state machine:**
 
 | Transition | Effect on the item |
 |---|---|
-| `PENDING → APPROVED` | `isAvailable` set to `false` — item is locked |
-| `APPROVED → RETURNED` | `isAvailable` set to `true` — item released |
+| `PENDING → APPROVED` | `isOnLoan` set to `true` — item is locked |
+| `APPROVED → RETURNED` | `isOnLoan` set to `false` — item released |
 | `PENDING → REJECTED` / `CANCELLED` | no change — the item was never locked |
+
+The owner's manual listing toggle (`isListed`, via `PATCH /inventory/:id/availability`) is independent of the loan lock; an item is bookable only when `isListed && !isOnLoan`.
 
 ---
 
@@ -563,11 +574,11 @@ Published by booking-service to the `infracore.events` topic exchange:
 
 | Event | Emitted when |
 |---|---|
-| `BOOKING_CREATED` | A student successfully creates a booking |
-| `BOOKING_APPROVED` | A manager or admin approves a pending booking |
-| `BOOKING_REJECTED` | A manager or admin rejects a pending booking |
-| `BOOKING_CANCELLED` | A student cancels their own pending booking |
-| `BOOKING_RETURNED` | A manager or admin marks an approved booking returned |
+| `BOOKING_CREATED` | A user successfully creates a booking |
+| `BOOKING_APPROVED` | The item's owner (or admin) approves a pending booking |
+| `BOOKING_REJECTED` | The item's owner (or admin) rejects a pending booking |
+| `BOOKING_CANCELLED` | The borrower cancels their own pending booking |
+| `BOOKING_RETURNED` | The item's owner (or admin) marks an approved booking returned |
 
 Messages are published `persistent: true` to a `durable: true` exchange, and consumed from a `durable: true` queue — so events survive a broker restart and a consumer being offline.
 
@@ -698,8 +709,8 @@ curl http://localhost:4001/api/v1/inventory \
 **A role change doesn't take effect**
 The role is embedded in the JWT at sign time. Log in again to get a token carrying the new role.
 
-**`Failed to update item availability` (503)**
-Booking-service couldn't reach inventory-service, or inventory-service rejected the call. Note that the availability endpoint requires a manager/admin role, and booking-service forwards the *original caller's* role.
+**`Failed to update item loan status` (503)**
+Booking-service couldn't reach inventory-service, or inventory-service rejected the loan call. Check that `INTERNAL_API_SECRET` is set to the **same value** in both services' `.env` files — a mismatch surfaces here as a 503.
 
 **Notifications never appear**
 Check the queue in the management UI at http://localhost:15672. If `notification.bookings` is filling but not draining, notification-service isn't consuming — restart it. If the queue doesn't exist at all, notification-service has never successfully started.
@@ -714,6 +725,7 @@ Check the queue in the management UI at http://localhost:15672. If `notification
 - Synchronous inter-service HTTP where consistency is needed
 - Asynchronous event-driven messaging via a durable topic exchange
 - A pure consumer service with no business HTTP surface
-- Role-based access control enforced independently in each service
+- Ownership-based access control layered over roles, enforced in each service
+- Service-to-service authentication via a shared internal secret
 - Domain state machine validation at the service layer
 - Consistent error and response contracts across five independent processes

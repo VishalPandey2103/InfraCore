@@ -56,7 +56,7 @@ Login saves your token into `{{token}}`, and every request sends it
 automatically. **Whoever you logged in as last is who you are.** To switch
 users, just run Login again with a different email.
 
-Register and Create item save `{{userId}}` and `{{itemId}}` for you. For
+Register and Publish item save `{{userId}}` and `{{itemId}}` for you. For
 anything else, copy an `_id` out of a response and paste it into the
 environment (the eye icon, top right).
 
@@ -66,30 +66,32 @@ environment (the eye icon, top right).
 
 ## The walkthrough
 
-Do this in order the first time. It touches all three services and the message queue.
+Do this in order the first time. It touches all three services and the message
+queue. You play two ordinary users: the **owner** (publishes the item) and the
+**borrower** (books it). No manager or admin needed.
 
 | # | Request | As | What you should see |
 |---|---------|-----|---------------------|
 | 1 | `0. Health` → Gateway health | — | `success: true` |
-| 2 | `1. Auth` → Register | — | 201. Change the email to anything unused |
-| 3 | `1. Auth` → Register | — | Register a second person to be the manager |
-| 4 | `1. Auth` → Login | admin | Use `admin@infracore.test` / `Admin@12345` |
-| 5 | `2. Users` → List all users | admin | Find your manager, copy their `_id` into `{{userId}}` |
-| 6 | `2. Users` → Change role | admin | `RESOURCE_MANAGER`. 200 |
-| 7 | `1. Auth` → Login | manager | **Required** — this is what activates the new role |
-| 8 | `3. Inventory` → Create item | manager | 201, `isAvailable: true`. Saves `{{itemId}}` |
-| 9 | `1. Auth` → Login | student | Back to the student |
-| 10 | `4. Bookings` → Create booking | student | 201, `PENDING`. Saves `{{bookingId}}` |
-| 11 | — | — | **Check your terminal**: `Subject: Booking submitted` |
-| 12 | `1. Auth` → Login | manager | |
-| 13 | `4. Bookings` → Approve | manager | 200, `APPROVED` |
-| 14 | `3. Inventory` → Get item by id | manager | `isAvailable` is now **false** |
-| 15 | `4. Bookings` → Mark returned | manager | 200, `RETURNED` |
-| 16 | `3. Inventory` → Get item by id | manager | `isAvailable` is **true** again |
+| 2 | `1. Auth` → Register | — | 201. This is the **owner**. Change the email to anything unused |
+| 3 | `1. Auth` → Register | — | Register a second person — the **borrower** |
+| 4 | `1. Auth` → Login | owner | |
+| 5 | `3. Inventory` → Publish item | owner | 201, `isListed: true`, `isOnLoan: false`. Saves `{{itemId}}` |
+| 6 | `1. Auth` → Login | borrower | |
+| 7 | `4. Bookings` → Create booking | borrower | 201, `PENDING`. Saves `{{bookingId}}` |
+| 8 | — | — | **Check your terminal**: two notifications — one to the borrower, one to the owner |
+| 9 | `1. Auth` → Login | owner | Back to the owner |
+| 10 | `4. Bookings` → Requests on my items | owner | The pending booking is in your inbox |
+| 11 | `4. Bookings` → Approve | owner | 200, `APPROVED` |
+| 12 | `3. Inventory` → Get item by id | owner | `isOnLoan` is now **true** |
+| 13 | `4. Bookings` → Mark returned | owner | 200, `RETURNED` |
+| 14 | `3. Inventory` → Get item by id | owner | `isOnLoan` is **false** again |
+| 15 | `3. Inventory` → List/delist item | owner | Set `isListed: false` — the item can no longer be booked |
 
-Steps 13–14 are the interesting pair: booking-service reached across to
-inventory-service over HTTP to flip that flag. Step 11 is the other half —
-that message went out through RabbitMQ to a completely separate process.
+Steps 11–12 are the interesting pair: booking-service reached across to
+inventory-service over HTTP (authenticated with the internal shared secret)
+to flip that flag. Step 8 is the other half — those messages went out through
+RabbitMQ to a completely separate process.
 
 ## Checking the queue
 
@@ -114,19 +116,22 @@ sent. Send those same headers straight to `http://localhost:4001` and you get
 admin access with no token at all. That is by design, but it means **ports
 4000–4002 must never be publicly reachable**.
 
-## Role reference
+## Permission reference
 
-| | STUDENT | RESOURCE_MANAGER | ADMIN |
-|---|:---:|:---:|:---:|
-| Read inventory | ✅ | ✅ | ✅ |
-| Create / edit / delete items | ❌ | ✅ | ✅ |
-| Create a booking | ✅ | ❌ | ❌ |
-| Cancel own booking | ✅ | ❌ | ❌ |
-| Approve / reject / return | ❌ | ✅ | ✅ |
-| See all bookings | ❌ | ✅ | ✅ |
-| List users, change roles | ❌ | ❌ | ✅ |
+Ownership comes first: whoever publishes an item controls it and the booking
+requests on it. Roles add moderation powers on top.
 
-Note that booking is STUDENT-only, so an admin cannot create one.
+| | any user | item owner | RESOURCE_MANAGER | ADMIN |
+|---|:---:|:---:|:---:|:---:|
+| Read inventory | ✅ | ✅ | ✅ | ✅ |
+| Publish an item | ✅ | — | ✅ | ✅ |
+| Edit / delete / delist an item | ❌ | ✅ own | ✅ any | ✅ any |
+| Book an item | ✅ not own | ❌ own | ✅ | ✅ |
+| Cancel own booking | ✅ | — | — | ✅ any |
+| Approve / reject / return | ❌ | ✅ own items | ❌ | ✅ any |
+| See requests on own items | ✅ | ✅ | ✅ | ✅ |
+| See all bookings | ❌ | ❌ | ✅ | ✅ |
+| List users, change roles | ❌ | ❌ | ❌ | ✅ |
 
 ## Booking states
 
