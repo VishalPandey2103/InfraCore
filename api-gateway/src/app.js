@@ -31,6 +31,9 @@ services.forEach((svc) => {
                 }
                 // strip the raw JWT before forwarding
                 proxyReq.removeHeader("authorization");
+                // never let external callers reach internal service-to-service
+                // endpoints (e.g. inventory's /loan) by forging the secret header
+                proxyReq.removeHeader("x-internal-secret");
             },
         },
     });
