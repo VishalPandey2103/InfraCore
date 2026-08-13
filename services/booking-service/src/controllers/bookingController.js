@@ -27,10 +27,19 @@ const listAllBookings = asyncHandler(async (req, res) => {
     res.json(new ApiResponse(true, "Bookings fetched", bookings));
 });
 
+// Incoming requests on items the caller has published.
+const listOwnerBookings = asyncHandler(async (req, res) => {
+    const bookings = await bookingService.listOwnerBookings(req.user.id);
+    res.json(new ApiResponse(true, "Bookings fetched", bookings));
+});
+
 const getBookingById = asyncHandler(async (req, res) => {
     const booking = await bookingService.getBookingById(req.params.id);
-    // students can only view their own bookings
-    if (req.user.role === "STUDENT" && booking.userId !== req.user.id) {
+    // visible to the borrower, the item's owner, and staff
+    const isBorrower = booking.userId === req.user.id;
+    const isOwner = booking.ownerId === req.user.id;
+    const isStaff = req.user.role === "ADMIN" || req.user.role === "RESOURCE_MANAGER";
+    if (!isBorrower && !isOwner && !isStaff) {
         throw new AppError("Forbidden", 403);
     }
     res.json(new ApiResponse(true, "Booking fetched", booking));
@@ -51,6 +60,7 @@ const makeStatusHandler = (newStatus) =>
 module.exports = {
     createBooking,
     listMyBookings,
+    listOwnerBookings,
     listAllBookings,
     getBookingById,
     approveBooking: makeStatusHandler("APPROVED"),

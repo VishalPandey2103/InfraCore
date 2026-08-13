@@ -14,6 +14,11 @@ const bookingSchema = new mongoose.Schema(
             type: String, // snapshot at booking time
             required: true,
         },
+        ownerId: {
+            type: String, // item owner, snapshot at booking time
+            required: true,
+            index: true,
+        },
         status: {
             type: String,
             enum: ["PENDING", "APPROVED", "REJECTED", "CANCELLED", "RETURNED"],

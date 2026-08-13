@@ -6,18 +6,22 @@ const { publish } = require("../events/publisher");
 const EVENTS = require("../events/eventNames");
 
 const createBooking = async ({ itemId, userId, userRole }) => {
-    // 1. Verify item exists and is available (sync call to inventory-service)
+    // 1. Verify item exists and is bookable (sync call to inventory-service)
     const item = await inventoryClient.getItem(itemId, userId, userRole);
 
-    if (!item.isAvailable) {
+    if (item.ownerId === userId) {
+        throw new AppError("You cannot book your own item", 400);
+    }
+    if (!item.isListed || item.isOnLoan) {
         throw new AppError("Item is not available", 400);
     }
 
-    // 2. Create booking in PENDING state
+    // 2. Create booking in PENDING state (owner snapshot for later authz)
     const booking = await Booking.create({
         userId,
         itemId,
         itemName: item.name,
+        ownerId: item.ownerId,
         status: "PENDING",
     });
 
@@ -27,9 +31,28 @@ const createBooking = async ({ itemId, userId, userRole }) => {
         userId,
         itemId,
         itemName: item.name,
+        ownerId: item.ownerId,
     });
 
     return booking;
+};
+
+// Who may drive which transition:
+//   CANCELLED                     -> the borrower (or ADMIN)
+//   APPROVED / REJECTED / RETURNED -> the item's owner (or ADMIN)
+const assertCanTransition = (booking, newStatus, userId, userRole) => {
+    if (userRole === "ADMIN") return;
+
+    if (newStatus === "CANCELLED") {
+        if (booking.userId !== userId) {
+            throw new AppError("You can only cancel your own bookings", 403);
+        }
+        return;
+    }
+
+    if (booking.ownerId !== userId) {
+        throw new AppError("Only the item's owner can manage this booking", 403);
+    }
 };
 
 const changeStatus = async ({ bookingId, newStatus, userId, userRole, remarks }) => {
@@ -38,10 +61,7 @@ const changeStatus = async ({ bookingId, newStatus, userId, userRole, remarks })
         throw new AppError("Booking not found", 404);
     }
 
-    // For CANCELLED, ensure it's the owner
-    if (newStatus === "CANCELLED" && booking.userId !== userId) {
-        throw new AppError("You can only cancel your own bookings", 403);
-    }
+    assertCanTransition(booking, newStatus, userId, userRole);
 
     if (!canTransition(booking.status, newStatus)) {
         throw new AppError(
@@ -61,15 +81,14 @@ const changeStatus = async ({ bookingId, newStatus, userId, userRole, remarks })
 
     await booking.save();
 
-    // Update item availability in inventory-service (sync)
+    // Loan lock in inventory-service (sync, internal auth).
+    // APPROVED locks the item; RETURNED releases it. CANCELLED/REJECTED only
+    // ever leave PENDING (see bookingState.js), where the item was never locked.
     if (newStatus === "APPROVED") {
-        await inventoryClient.setItemAvailability(booking.itemId, false, userId, userRole);
+        await inventoryClient.setLoanStatus(booking.itemId, true);
     }
-    if (newStatus === "RETURNED" || newStatus === "CANCELLED" || newStatus === "REJECTED") {
-        // Only flip back to available if it was previously approved (i.e., item was locked)
-        if (newStatus === "RETURNED" || booking.status === "RETURNED") {
-            await inventoryClient.setItemAvailability(booking.itemId, true, userId, userRole);
-        }
+    if (newStatus === "RETURNED") {
+        await inventoryClient.setLoanStatus(booking.itemId, false);
     }
 
     // Emit event
@@ -84,6 +103,7 @@ const changeStatus = async ({ bookingId, newStatus, userId, userRole, remarks })
         userId: booking.userId,
         itemId: booking.itemId,
         itemName: booking.itemName,
+        ownerId: booking.ownerId,
     });
 
     return booking;
@@ -91,6 +111,11 @@ const changeStatus = async ({ bookingId, newStatus, userId, userRole, remarks })
 
 const listMyBookings = async (userId) => {
     return await Booking.find({ userId }).sort({ createdAt: -1 });
+};
+
+// Incoming requests on items the user has published.
+const listOwnerBookings = async (ownerId) => {
+    return await Booking.find({ ownerId }).sort({ createdAt: -1 });
 };
 
 const listAllBookings = async () => {
@@ -109,6 +134,7 @@ module.exports = {
     createBooking,
     changeStatus,
     listMyBookings,
+    listOwnerBookings,
     listAllBookings,
     getBookingById,
 };

@@ -1,6 +1,6 @@
 const axios = require("axios");
 const AppError = require("../utils/appError");
-const { INVENTORY_SERVICE_URL } = require("../config/envConfig");
+const { INVENTORY_SERVICE_URL, INTERNAL_API_SECRET } = require("../config/envConfig");
 
 // Forward the caller's identity when calling inventory-service.
 // Inventory-service trusts x-user-id and x-user-role headers.
@@ -24,16 +24,19 @@ const getItem = async (itemId, userId, userRole) => {
     }
 };
 
-const setItemAvailability = async (itemId, isAvailable, userId, userRole) => {
+// System-driven loan lock/unlock. Authenticated with the shared internal
+// secret, not user identity: the acting user (e.g. the borrower) is not
+// the item's owner, so an ownership check would wrongly reject them.
+const setLoanStatus = async (itemId, isOnLoan) => {
     try {
         await axios.patch(
-            `${INVENTORY_SERVICE_URL}/api/v1/inventory/${itemId}/availability`,
-            { isAvailable },
-            { headers: buildHeaders(userId, userRole) }
+            `${INVENTORY_SERVICE_URL}/api/v1/inventory/${itemId}/loan`,
+            { isOnLoan },
+            { headers: { "x-internal-secret": INTERNAL_API_SECRET } }
         );
     } catch (error) {
-        throw new AppError("Failed to update item availability", 503);
+        throw new AppError("Failed to update item loan status", 503);
     }
 };
 
-module.exports = { getItem, setItemAvailability };
+module.exports = { getItem, setLoanStatus };

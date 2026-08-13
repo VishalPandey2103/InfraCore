@@ -15,7 +15,7 @@ Runs on port **4002**, backed by the `booking-service` database. Requires both M
           ┌───────────────┼───────────────┐
           │               │               │
       approve          reject          cancel
-   (mgr/admin)      (mgr/admin)      (student, own only)
+  (owner/admin)    (owner/admin)     (borrower, own only)
           │               │               │
           ▼               ▼               ▼
    ┌────────────┐  ┌────────────┐  ┌─────────────┐
@@ -23,7 +23,7 @@ Runs on port **4002**, backed by the `booking-service` database. Requires both M
    └──────┬─────┘  └────────────┘  └─────────────┘
           │            terminal        terminal
        return
-    (mgr/admin)
+  (owner/admin)
           │
           ▼
    ┌────────────┐
@@ -49,19 +49,20 @@ Anything not listed is rejected with a 400 naming both states — `"Cannot trans
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/bookings` | `STUDENT` | Create a booking |
-| `GET` | `/api/v1/bookings/me` | any authed user | Own bookings |
+| `POST` | `/api/v1/bookings` | any authed user (not the item's owner) | Create a booking |
+| `GET` | `/api/v1/bookings/me` | any authed user | Own bookings (as borrower) |
+| `GET` | `/api/v1/bookings/owner` | any authed user | Incoming requests on items the caller published |
 | `GET` | `/api/v1/bookings` | `RESOURCE_MANAGER`, `ADMIN` | All bookings |
-| `GET` | `/api/v1/bookings/:id` | owner, or manager/admin | Single booking |
-| `PATCH` | `/api/v1/bookings/:id/approve` | `RESOURCE_MANAGER`, `ADMIN` | → `APPROVED` |
-| `PATCH` | `/api/v1/bookings/:id/reject` | `RESOURCE_MANAGER`, `ADMIN` | → `REJECTED` |
-| `PATCH` | `/api/v1/bookings/:id/return` | `RESOURCE_MANAGER`, `ADMIN` | → `RETURNED` |
-| `PATCH` | `/api/v1/bookings/:id/cancel` | `STUDENT`, own only | → `CANCELLED` |
+| `GET` | `/api/v1/bookings/:id` | borrower, item owner, or manager/admin | Single booking |
+| `PATCH` | `/api/v1/bookings/:id/approve` | item owner, `ADMIN` | → `APPROVED` |
+| `PATCH` | `/api/v1/bookings/:id/reject` | item owner, `ADMIN` | → `REJECTED` |
+| `PATCH` | `/api/v1/bookings/:id/return` | item owner, `ADMIN` | → `RETURNED` |
+| `PATCH` | `/api/v1/bookings/:id/cancel` | borrower, `ADMIN` | → `CANCELLED` |
 | `GET` | `/health` | public | Liveness check |
 
 All four status routes accept an optional `{ "remarks": "..." }` body.
 
-`/me` is declared before `/:id` in the router so the literal path isn't captured by the parameter route.
+`/me` and `/owner` are declared before `/:id` in the router so the literal paths aren't captured by the parameter route.
 
 ---
 
@@ -69,9 +70,10 @@ All four status routes accept an optional `{ "remarks": "..." }` body.
 
 ```js
 {
-    userId:      String,  // from the gateway headers — not an ObjectId ref
+    userId:      String,  // the borrower — from the gateway headers, not an ObjectId ref
     itemId:      String,  // from inventory-service — not an ObjectId ref
     itemName:    String,  // snapshotted at booking time
+    ownerId:     String,  // the item's owner, snapshotted at booking time (indexed)
     status:      String,  // PENDING | APPROVED | REJECTED | CANCELLED | RETURNED
     remarks:     String,  // defaults to ""
     approvedAt:  Date,
@@ -86,6 +88,8 @@ All four status routes accept an optional `{ "remarks": "..." }` body.
 **Why `userId` and `itemId` are strings.** Both live in other services' databases. Declaring them as Mongoose refs would invite a cross-service `.populate()` — exactly the coupling database-per-service exists to prevent.
 
 **Why `itemName` is duplicated.** It's a snapshot taken when the booking is created. If the item is later renamed or deleted, historical bookings still read correctly and the notification emails still make sense. Deliberate denormalization at a service boundary.
+
+**Why `ownerId` is duplicated.** Approve/reject/return are authorized against the item's owner. Snapshotting the owner at booking time means those checks never need a synchronous call to inventory-service — and `GET /bookings/owner` is a single indexed query.
 
 **Why four timestamps instead of a status log.** Each terminal state stamps its own field, so the lifecycle of a booking is readable from the document alone.
 
@@ -107,10 +111,13 @@ POST /api/v1/bookings  { itemId }
         └── 200          →  item
         │
         ▼
-  item.isAvailable === false     →  400 "Item is not available"
+  item.ownerId === caller        →  400 "You cannot book your own item"
         │
         ▼
-  Booking.create({ status: "PENDING", itemName: item.name })
+  !item.isListed || item.isOnLoan →  400 "Item is not available"
+        │
+        ▼
+  Booking.create({ status: "PENDING", itemName: item.name, ownerId: item.ownerId })
         │
         ▼
   publish BOOKING_CREATED        [ ASYNCHRONOUS → RabbitMQ ]
@@ -123,18 +130,18 @@ The availability check is synchronous because the answer changes what happens ne
 
 ---
 
-## Item availability
+## Item loan lock
 
-Booking-service drives the item's `isAvailable` flag through `inventoryClient`:
+Booking-service drives the item's `isOnLoan` flag through `inventoryClient`:
 
 | Transition | Call | Effect |
 |---|---|---|
-| `PENDING → APPROVED` | `setItemAvailability(itemId, false)` | Item locked |
-| `APPROVED → RETURNED` | `setItemAvailability(itemId, true)` | Item released |
+| `PENDING → APPROVED` | `setLoanStatus(itemId, true)` | Item locked |
+| `APPROVED → RETURNED` | `setLoanStatus(itemId, false)` | Item released |
 | `PENDING → REJECTED` | none | Never locked, nothing to release |
 | `PENDING → CANCELLED` | none | Never locked, nothing to release |
 
-An item is only ever locked at approval, so the two paths that leave `PENDING` without approval require no compensating call.
+An item is only ever locked at approval, so the two paths that leave `PENDING` without approval require no compensating call. The owner's manual listing toggle (`isListed`) is a separate flag and is never touched by this service.
 
 ---
 
@@ -142,14 +149,14 @@ An item is only ever locked at approval, so the two paths that leave `PENDING` w
 
 `src/clients/inventoryClient.js` wraps both outbound calls with axios:
 
-| Method | Calls | Used by |
-|---|---|---|
-| `getItem(itemId, userId, userRole)` | `GET /api/v1/inventory/:id` | Booking creation |
-| `setItemAvailability(itemId, isAvailable, userId, userRole)` | `PATCH /api/v1/inventory/:id/availability` | Approve / return |
+| Method | Calls | Auth | Used by |
+|---|---|---|---|
+| `getItem(itemId, userId, userRole)` | `GET /api/v1/inventory/:id` | caller's `x-user-id` / `x-user-role` | Booking creation |
+| `setLoanStatus(itemId, isOnLoan)` | `PATCH /api/v1/inventory/:id/loan` | `x-internal-secret` (shared secret) | Approve / return |
 
-Both forward the original caller's `x-user-id` and `x-user-role` headers, since inventory-service uses the same gateway-trust model. Failures are translated into `AppError` rather than leaking axios errors — a 404 stays a 404, everything else becomes a 503.
+The loan call deliberately does **not** forward the caller's identity: the booking lifecycle acts as the *system*, and the acting user (e.g. an owner approving a stranger's request) wouldn't pass an ownership check on the inventory side in every case. The shared `INTERNAL_API_SECRET` identifies booking-service as a trusted internal caller instead.
 
-Because the *caller's* role is forwarded rather than a service identity, an action initiated by a `STUDENT` that reaches the availability endpoint would be rejected with a 403 (surfacing here as a 503). In practice this doesn't arise: availability only changes on approve and return, both manager/admin actions.
+Failures are translated into `AppError` rather than leaking axios errors — a 404 stays a 404, everything else becomes a 503.
 
 ---
 
@@ -175,7 +182,8 @@ Payload:
         "bookingId": "66b2...",
         "userId": "665a...",
         "itemId": "66b1...",
-        "itemName": "Dell Latitude 5420"
+        "itemName": "Dell Latitude 5420",
+        "ownerId": "6659..."
     }
 }
 ```
@@ -190,9 +198,9 @@ Gateway-trust, same as inventory-service: `authMiddleware` reads `x-user-id` and
 
 Authorization is layered:
 
-1. **Role**, at the route — `role("STUDENT")` on create and cancel, `role("RESOURCE_MANAGER", "ADMIN")` on approve/reject/return.
-2. **Ownership**, in the service — `changeStatus` rejects a cancel when `booking.userId` doesn't match the caller.
-3. **Visibility**, in the controller — `getBookingById` returns 403 if a `STUDENT` requests someone else's booking.
+1. **Role**, at the route — only `GET /bookings` (all bookings) still requires `RESOURCE_MANAGER` / `ADMIN`.
+2. **Ownership**, in the service — `assertCanTransition`: cancel requires the borrower, approve/reject/return require the item's owner (`booking.ownerId`); `ADMIN` bypasses both.
+3. **Visibility**, in the controller — `getBookingById` returns 403 unless the caller is the borrower, the item's owner, or manager/admin.
 
 The four status handlers are generated from one `makeStatusHandler(newStatus)` factory in the controller, so the transition logic exists in exactly one place.
 
@@ -204,11 +212,12 @@ The four status handlers are generated from one `makeStatusHandler(newStatus)` f
 PORT=4002
 MONGODB_URI=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/booking-service
 INVENTORY_SERVICE_URL=http://localhost:4001
+INTERNAL_API_SECRET=<random-long-string>   # must match inventory-service
 RABBITMQ_URL=amqp://localhost:5672
 RABBITMQ_EXCHANGE=infracore.events
 ```
 
-`RABBITMQ_EXCHANGE` must match the value notification-service binds its queue to.
+`RABBITMQ_EXCHANGE` must match the value notification-service binds its queue to. `INTERNAL_API_SECRET` authenticates the loan-lock call to inventory-service.
 
 ---
 
@@ -237,9 +246,9 @@ Inventory-service should also be running, or booking creation returns a 503.
 
 | Status | When |
 |---|---|
-| `400` | Missing `itemId`, item unavailable, or an illegal state transition |
+| `400` | Missing `itemId`, item unavailable, booking your own item, or an illegal state transition |
 | `401` | Missing gateway identity headers |
-| `403` | Wrong role, or acting on another user's booking |
+| `403` | Not the borrower (cancel) / not the item's owner (approve, reject, return) |
 | `404` | Booking or item not found |
 | `503` | Inventory-service unreachable or rejected the call |
 
