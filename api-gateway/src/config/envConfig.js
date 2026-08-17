@@ -7,4 +7,7 @@ module.exports = {
     USER_SERVICE_URL: process.env.USER_SERVICE_URL || "http://localhost:4000",
     INVENTORY_SERVICE_URL: process.env.INVENTORY_SERVICE_URL || "http://localhost:4001",
     BOOKING_SERVICE_URL: process.env.BOOKING_SERVICE_URL || "http://localhost:4002",
+
+    // ----- Redis -----
+    REDIS_URL: process.env.REDIS_URL || "redis://localhost:6379",
 };
