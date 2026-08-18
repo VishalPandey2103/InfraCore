@@ -14,6 +14,12 @@ const assertCanManage = (item, actor) => {
 
 const createItem = async (data, ownerId) => {
     const item = await Item.create({ ...data, ownerId });
+    // A new item can appear in any filtered list — nuke list caches.
+    // Owner's "mine" cache is stale too.
+    await Promise.all([
+        cache.invalidateAllLists(),
+        cache.invalidateMine(ownerId),
+    ]);
     return item;
 };
 
@@ -33,6 +39,10 @@ const getItemById = async (id) => {
 };
 
 const listItems = async (filters = {}) => {
+    // Only cache the exact filter shape received. Same filters → same key.
+    const cached = await cache.getList(filters);
+    if (cached) return cached;
+
     const query = {};
     if (filters.category) query.category = filters.category;
     if (filters.department) query.department = filters.department;
@@ -45,11 +55,18 @@ const listItems = async (filters = {}) => {
         query.$or = [{ isListed: false }, { isOnLoan: true }];
     }
 
-    return await Item.find(query).sort({ createdAt: -1 });
+    const items = await Item.find(query).sort({ createdAt: -1 });
+    await cache.setList(filters, items.map((i) => i.toObject()));
+    return items;
 };
 
 const listMyItems = async (ownerId) => {
-    return await Item.find({ ownerId }).sort({ createdAt: -1 });
+    const cached = await cache.getMine(ownerId);
+    if (cached) return cached;
+
+    const items = await Item.find({ ownerId }).sort({ createdAt: -1 });
+    await cache.setMine(ownerId, items.map((i) => i.toObject()));
+    return items;
 };
 
 const updateItem = async (id, updates, actor) => {
@@ -59,8 +76,12 @@ const updateItem = async (id, updates, actor) => {
     item.set(updates);
     await item.save();
 
-    // The cached copy is now stale — drop it.
-    await cache.invalidateItem(id);
+    // Invalidate every place this item could be cached
+    await Promise.all([
+        cache.invalidateItem(id),
+        cache.invalidateAllLists(),
+        cache.invalidateMine(item.ownerId),
+    ]);
     return item;
 };
 
@@ -70,7 +91,11 @@ const deleteItem = async (id, actor) => {
     assertCanManage(item, actor);
     await item.deleteOne();
 
-    await cache.invalidateItem(id);
+    await Promise.all([
+        cache.invalidateItem(id),
+        cache.invalidateAllLists(),
+        cache.invalidateMine(item.ownerId),
+    ]);
     return item;
 };
 
@@ -82,7 +107,11 @@ const setListing = async (id, isListed, actor) => {
     item.isListed = isListed;
     await item.save();
 
-    await cache.invalidateItem(id);
+    await Promise.all([
+        cache.invalidateItem(id),
+        cache.invalidateAllLists(),
+        cache.invalidateMine(item.ownerId),
+    ]);
     return item;
 };
 
@@ -100,7 +129,11 @@ const setLoanStatus = async (id, isOnLoan) => {
         throw new AppError("Item not found", 404);
     }
 
-    await cache.invalidateItem(id);
+    await Promise.all([
+        cache.invalidateItem(id),
+        cache.invalidateAllLists(),
+        cache.invalidateMine(item.ownerId),
+    ]);
     return item;
 };
 
