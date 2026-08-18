@@ -3,18 +3,24 @@ const { createProxyMiddleware } = require("http-proxy-middleware");
 
 const services = require("./config/servicesConfig");
 const verifyJwt = require("./middlewares/jwtMiddleware");
+const { authRateLimit, userRateLimit } = require("./middlewares/rateLimitMiddleware");
 const healthRoutes = require("./routes/healthRoutes");
 const notFound = require("./middlewares/notFoundMiddleware");
 const errorHandler = require("./middlewares/errorMiddleware");
 
 const app = express();
 
-// Health endpoint (not proxied)
+// Trust the first proxy in front of us so req.ip reflects the real client IP.
+// Rate limiting for auth endpoints keys on req.ip; without this every request
+// would share the loopback address of the fronting proxy.
+app.set("trust proxy", 1);
+
+// Health endpoint (not proxied, not rate limited — used by liveness probes)
 app.use("/health", healthRoutes);
 
 // Wire each service.
-// Public prefixes (auth) skip JWT.
-// Protected prefixes verify JWT and inject x-user-id / x-user-role.
+// Public prefixes (auth) skip JWT but get a strict IP-based rate limit.
+// Protected prefixes verify JWT then apply a user-scoped rate limit.
 services.forEach((svc) => {
     const proxy = createProxyMiddleware({
         target: svc.target,
@@ -39,9 +45,13 @@ services.forEach((svc) => {
     });
 
     if (svc.public) {
-        app.use(svc.prefix, proxy);
+        // Public route ordering: rate limit BEFORE proxy so we reject 429 at
+        // the edge without burning a downstream request.
+        app.use(svc.prefix, authRateLimit, proxy);
     } else {
-        app.use(svc.prefix, verifyJwt, proxy);
+        // Protected route ordering: verifyJwt first (so req.user is populated),
+        // then userRateLimit (which keys on req.user.id), then proxy.
+        app.use(svc.prefix, verifyJwt, userRateLimit, proxy);
     }
 });
 
