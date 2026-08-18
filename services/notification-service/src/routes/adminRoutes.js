@@ -9,7 +9,6 @@ const {
 
 const router = express.Router();
 
-// All /admin routes require the shared admin secret in x-admin-secret header.
 router.use(adminAuth);
 
 router.get("/parking/depth", parkingDepth);

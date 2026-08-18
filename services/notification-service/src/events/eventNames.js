@@ -1,3 +1,4 @@
+// used as RabbitMQ routing keys and eventName
 module.exports = {
     BOOKING_CREATED: "BOOKING_CREATED",
     BOOKING_APPROVED: "BOOKING_APPROVED",
