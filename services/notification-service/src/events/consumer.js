@@ -2,6 +2,7 @@ const { getChannel } = require("../config/rabbitmqConfig");
 const {
     RABBITMQ_QUEUE,
     RABBITMQ_RETRY_EXCHANGE,
+    RABBITMQ_RETRY_QUEUE,
     RABBITMQ_PARKING_QUEUE,
     RETRY_BASE_DELAY_MS,
     MAX_RETRIES,
@@ -11,20 +12,28 @@ const handlers = require("../handlers");
 // -----------------------------------------------------------------------------
 // How the retry counter is read:
 //
-// Every time RabbitMQ dead-letters a message, it prepends an entry to the
-// x-death header (an array of objects). We count entries whose "queue" field
-// equals our main queue — that's the number of times *this* handler has already
-// failed on *this* message.
+// Every time RabbitMQ dead-letters a message it adds (or increments) an entry
+// in the x-death header, keyed by the queue the message died in.
+//
+// The entry to count is the RETRY queue's, not the main queue's. On failure we
+// ack the original and hand-publish a copy to the retry exchange, so the main
+// queue never dead-letters anything and never gets an x-death entry of its own.
+// The only death the broker ever records is the retry queue's TTL expiry, and
+// its "count" is exactly the number of completed retry cycles.
+//
+// Counting the main queue here instead is a silent infinite-retry bug: the
+// count stays 0, `attempts >= MAX_RETRIES` is never true, and nothing is ever
+// parked.
 //
 // Alternative: track a custom "x-retry-count" header we bump ourselves. Simpler
-// to reason about but forces us to strip-and-re-publish on retry. Using
-// x-death lets the broker do the accounting for us.
+// to reason about but forces us to trust our own accounting rather than the
+// broker's. x-death lets the broker do it for us.
 // -----------------------------------------------------------------------------
 const countPreviousAttempts = (msg) => {
     const deaths = msg.properties.headers && msg.properties.headers["x-death"];
     if (!Array.isArray(deaths)) return 0;
-    const forThisQueue = deaths.find((d) => d.queue === RABBITMQ_QUEUE);
-    return forThisQueue ? forThisQueue.count : 0;
+    const fromRetryQueue = deaths.find((d) => d.queue === RABBITMQ_RETRY_QUEUE);
+    return fromRetryQueue ? fromRetryQueue.count : 0;
 };
 
 // Exponential backoff: 5s -> 10s -> 20s -> ...
