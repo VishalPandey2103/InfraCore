@@ -1,5 +1,6 @@
 const Item = require("../models/itemModel");
 const AppError = require("../utils/appError");
+const cache = require("./cacheService");
 
 // Owner-or-staff guard: the publisher manages their own item;
 // ADMIN and RESOURCE_MANAGER can manage any item.
@@ -17,10 +18,17 @@ const createItem = async (data, ownerId) => {
 };
 
 const getItemById = async (id) => {
+    // Cache-aside: check Redis first
+    const cached = await cache.getItem(id);
+    if (cached) return cached;
+
     const item = await Item.findById(id);
     if (!item) {
         throw new AppError("Item not found", 404);
     }
+    // Populate the cache for the next reader. .toObject() converts the
+    // mongoose document into a plain JSON-safe object before caching.
+    await cache.setItem(id, item.toObject());
     return item;
 };
 
@@ -45,31 +53,43 @@ const listMyItems = async (ownerId) => {
 };
 
 const updateItem = async (id, updates, actor) => {
-    const item = await getItemById(id);
+    const item = await Item.findById(id); // read straight from DB — do NOT use cache
+    if (!item) throw new AppError("Item not found", 404);
     assertCanManage(item, actor);
     item.set(updates);
     await item.save();
+
+    // The cached copy is now stale — drop it.
+    await cache.invalidateItem(id);
     return item;
 };
 
 const deleteItem = async (id, actor) => {
-    const item = await getItemById(id);
+    const item = await Item.findById(id);
+    if (!item) throw new AppError("Item not found", 404);
     assertCanManage(item, actor);
     await item.deleteOne();
+
+    await cache.invalidateItem(id);
     return item;
 };
 
 // Owner-facing toggle: publish/delist the item.
 const setListing = async (id, isListed, actor) => {
-    const item = await getItemById(id);
+    const item = await Item.findById(id);
+    if (!item) throw new AppError("Item not found", 404);
     assertCanManage(item, actor);
     item.isListed = isListed;
     await item.save();
+
+    await cache.invalidateItem(id);
     return item;
 };
 
 // Internal (service-to-service) only: lock/unlock the item for a loan.
 // No ownership check — the route is guarded by the internal-auth middleware.
+// This is called from the booking service every time a booking is approved
+// or returned, so the cache MUST be invalidated to keep availability accurate.
 const setLoanStatus = async (id, isOnLoan) => {
     const item = await Item.findByIdAndUpdate(
         id,
@@ -79,6 +99,8 @@ const setLoanStatus = async (id, isOnLoan) => {
     if (!item) {
         throw new AppError("Item not found", 404);
     }
+
+    await cache.invalidateItem(id);
     return item;
 };
 
