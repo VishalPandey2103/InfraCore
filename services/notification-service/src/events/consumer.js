@@ -1,6 +1,49 @@
 const { getChannel } = require("../config/rabbitmqConfig");
-const { RABBITMQ_QUEUE } = require("../config/envConfig");
+const {
+    RABBITMQ_QUEUE,
+    RABBITMQ_RETRY_EXCHANGE,
+    RABBITMQ_PARKING_QUEUE,
+    RETRY_BASE_DELAY_MS,
+    MAX_RETRIES,
+} = require("../config/envConfig");
 const handlers = require("../handlers");
+
+// -----------------------------------------------------------------------------
+// How the retry counter is read:
+//
+// Every time RabbitMQ dead-letters a message, it prepends an entry to the
+// x-death header (an array of objects). We count entries whose "queue" field
+// equals our main queue — that's the number of times *this* handler has already
+// failed on *this* message.
+//
+// Alternative: track a custom "x-retry-count" header we bump ourselves. Simpler
+// to reason about but forces us to strip-and-re-publish on retry. Using
+// x-death lets the broker do the accounting for us.
+// -----------------------------------------------------------------------------
+const countPreviousAttempts = (msg) => {
+    const deaths = msg.properties.headers && msg.properties.headers["x-death"];
+    if (!Array.isArray(deaths)) return 0;
+    const forThisQueue = deaths.find((d) => d.queue === RABBITMQ_QUEUE);
+    return forThisQueue ? forThisQueue.count : 0;
+};
+
+// Exponential backoff: 5s -> 10s -> 20s -> ...
+const backoffMs = (attempt) => RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+
+// Route a message to the parking queue with a reason header so an admin can
+// inspect why it died. Uses sendToQueue (bypasses exchange routing) because
+// the parking queue has no bindings we want to reason about.
+const parkMessage = (channel, msg, reason) => {
+    channel.sendToQueue(RABBITMQ_PARKING_QUEUE, msg.content, {
+        persistent: true,
+        headers: {
+            ...(msg.properties.headers || {}),
+            "x-parking-reason": reason,
+            "x-parking-time": new Date().toISOString(),
+            "x-original-routing-key": msg.fields.routingKey,
+        },
+    });
+};
 
 const startConsumer = () => {
     const channel = getChannel();
@@ -8,27 +51,63 @@ const startConsumer = () => {
         throw new Error("RabbitMQ channel not initialized");
     }
 
-    channel.consume(RABBITMQ_QUEUE, (msg) => {
+    channel.consume(RABBITMQ_QUEUE, async (msg) => {
         if (!msg) return;
 
+        // -- 1. Parse. Malformed payload = poison message, straight to parking. --
+        let payload;
         try {
-            const payload = JSON.parse(msg.content.toString());
-            const handler = handlers[payload.eventName];
+            payload = JSON.parse(msg.content.toString());
+        } catch (err) {
+            console.error("[notification-service] malformed payload, parking:", err.message);
+            parkMessage(channel, msg, `parse-error: ${err.message}`);
+            channel.ack(msg);
+            return;
+        }
 
-            if (handler) {
-                handler(payload.data);
-            } else {
-                console.warn("No handler for event:", payload.eventName);
+        const handler = handlers[payload.eventName];
+        if (!handler) {
+            console.warn("[notification-service] no handler for", payload.eventName, "— parking");
+            parkMessage(channel, msg, `no-handler:${payload.eventName}`);
+            channel.ack(msg);
+            return;
+        }
+
+        // -- 2. Attempt the handler. --
+        try {
+            // Wrapped in Promise.resolve so sync handlers still work.
+            await Promise.resolve(handler(payload.data));
+            channel.ack(msg);
+        } catch (err) {
+            const attempts = countPreviousAttempts(msg);
+            console.error(
+                `[notification-service] handler failed (attempt ${attempts + 1}/${MAX_RETRIES + 1}) for ${payload.eventName}:`,
+                err.message
+            );
+
+            if (attempts >= MAX_RETRIES) {
+                // -- 3a. Retries exhausted -> parking queue, ack the original. --
+                parkMessage(channel, msg, `max-retries-exceeded: ${err.message}`);
+                channel.ack(msg);
+                return;
             }
 
+            // -- 3b. Republish through the retry exchange with a TTL. --
+            // We CANNOT use nack(false, false) here because the retry queue
+            // uses one TTL for all messages by default, and we want per-message
+            // backoff. So we ack the original and publish a new copy to the
+            // retry exchange with a per-message TTL (expiration property).
+            const delay = backoffMs(attempts);
+            channel.publish(RABBITMQ_RETRY_EXCHANGE, msg.fields.routingKey, msg.content, {
+                persistent: true,
+                expiration: String(delay),
+                headers: msg.properties.headers, // preserves x-death chain
+            });
             channel.ack(msg);
-        } catch (error) {
-            console.error("Error processing message:", error.message);
-            channel.nack(msg, false, false); // discard bad message
         }
     });
 
-    console.log(`Consuming events from queue: ${RABBITMQ_QUEUE}`);
+    console.log(`[notification-service] consuming from ${RABBITMQ_QUEUE} (max ${MAX_RETRIES} retries)`);
 };
 
 module.exports = { startConsumer };
