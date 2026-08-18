@@ -1,7 +1,7 @@
 const notifier = require("../services/notifierService");
 
-module.exports = (data) => {
-    notifier.send(
+module.exports = async (data) => {
+    await notifier.send(
         data.userId,
         `Booking rejected: ${data.itemName}`,
         `Your booking request for "${data.itemName}" was rejected by the owner.`
