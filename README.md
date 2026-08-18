@@ -695,6 +695,10 @@ POST /api/v1/auth/logout
    next request carrying that token  →  401 "Token has been revoked"
 ```
 
+> **The routing trap this creates.** `/api/v1/auth` is a *public* prefix — it skips `verifyJwt` so that register and login work without a token. But logout needs the opposite: it only works if the gateway has already decoded the token and forwarded `x-user-jti`. Left under the public prefix, `POST /logout` returns `401 "Missing gateway identity headers"`, and — worse — reports nothing wrong at the gateway. The token is simply never revoked.
+>
+> `servicesConfig.js` therefore lists `/api/v1/auth/logout` as a protected prefix **before** the public `/api/v1/auth` entry. Express matches the first mount that fits, so ordering is what makes it work; move it after and the public entry swallows it again.
+
 ---
 
 ## Inventory caching
@@ -1025,6 +1029,14 @@ redis-cli --scan --pattern 'inv:*' | xargs redis-cli del
 
 **The parking queue never fills**
 Expected, given the `x-death` counting bug documented under [Retries and the dead-letter queue](#retries-and-the-dead-letter-queue) — messages retry indefinitely instead of parking.
+
+**Notification-service crashes on boot with `PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange'`**
+The queue already exists from before the DLQ upgrade, declared without dead-letter arguments, and RabbitMQ refuses to redeclare a queue with different arguments. This hits every environment that ran the pre-upgrade code — it is a migration step, not a bug. Check the depth first, then drop the queue so the new topology can be declared:
+```bash
+docker exec rabbitmq rabbitmqctl list_queues name messages
+docker exec rabbitmq rabbitmqctl delete_queue notification.bookings
+```
+Anything still queued is lost, so drain it first if the count is non-zero. Restart notification-service and it will recreate the queue with the correct `x-dead-letter-exchange` argument, alongside the retry and parking queues.
 
 **`/admin/parking/*` returns 401**
 `ADMIN_API_SECRET` is unset, or doesn't match the `x-admin-secret` header. Note these routes are served on port 4003 directly, not through the gateway on 3000.
