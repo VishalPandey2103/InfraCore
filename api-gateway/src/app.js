@@ -34,6 +34,10 @@ services.forEach((svc) => {
                 if (req.user) {
                     proxyReq.setHeader("x-user-id", req.user.id);
                     proxyReq.setHeader("x-user-role", req.user.role);
+                    // jti + exp so the user-service /logout can revoke this
+                    // exact token without needing the raw JWT (which we strip).
+                    if (req.user.jti) proxyReq.setHeader("x-user-jti", req.user.jti);
+                    if (req.user.exp) proxyReq.setHeader("x-user-exp", String(req.user.exp));
                 }
                 // strip the raw JWT before forwarding
                 proxyReq.removeHeader("authorization");
