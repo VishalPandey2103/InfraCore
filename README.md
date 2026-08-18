@@ -504,6 +504,8 @@ Served by notification-service on port **4003 directly**, not through the gatewa
 | `POST` | `/admin/parking/replay` | re-publish parked messages to the main exchange (`{ limit }`, default 100) |
 | `DELETE` | `/admin/parking` | purge the parking queue permanently |
 
+`peek` is approximate by design: it reads messages and nacks them straight back, so asking for a larger `limit` than the queue depth will show you the same message more than once. Treat it as a sample, not an inventory — `depth` is the authoritative count.
+
 ### Health
 
 Each process exposes an unauthenticated `GET /health`: ports 3000, 4000, 4001, 4002, 4003.
@@ -801,7 +803,9 @@ FORCE_FAILURE_RATE=1 npm run dev
 
 Every send now throws. Trigger a booking, watch the retry ladder in the logs, then watch `/admin/parking/depth` climb once attempts run out. Set `FORCE_FAILURE_RATE=0`, restart, and `POST /admin/parking/replay` to drain everything back through successfully.
 
-> **Known bug in the current consumer.** `countPreviousAttempts()` counts `x-death` entries whose `queue` is the **main** queue. But the retry path acks the original and republishes by hand, so the broker only ever records a death against the **retry** queue. The count therefore stays at `0`, `attempts >= MAX_RETRIES` never becomes true, and messages retry forever instead of parking. Matching on `RABBITMQ_RETRY_QUEUE` instead is the one-line fix. Worth doing before demoing the parking queue, because as written it never fills.
+Verified end to end: four attempts logged as `1/4` through `4/4`, then the message parked carrying `x-death: notification.bookings.retry count=3` and `x-parking-reason: max-retries-exceeded`. A `POST /admin/parking/replay` drained it back through the main queue and it delivered successfully.
+
+> **Why the counter reads the *retry* queue, not the main one.** `countPreviousAttempts()` looks for the `x-death` entry whose `queue` is `notification.bookings.retry`. Because the retry path acks the original and republishes by hand, the main queue never dead-letters anything and so never accrues an `x-death` entry of its own. The only death the broker ever records is the retry queue's TTL expiry, and its `count` is exactly the number of completed retry cycles. Count the main queue instead and the value reads `0` forever — `attempts >= MAX_RETRIES` never becomes true, nothing is ever parked, and messages retry indefinitely. The failure is silent, which is what makes it worth knowing about.
 
 ---
 
@@ -1028,7 +1032,7 @@ redis-cli --scan --pattern 'inv:*' | xargs redis-cli del
 ```
 
 **The parking queue never fills**
-Expected, given the `x-death` counting bug documented under [Retries and the dead-letter queue](#retries-and-the-dead-letter-queue) — messages retry indefinitely instead of parking.
+Check that `countPreviousAttempts()` in `events/consumer.js` matches on `RABBITMQ_RETRY_QUEUE`. Since the consumer republishes retries by hand rather than nacking, the main queue never accrues an `x-death` entry — counting it there reads `0` forever, so `MAX_RETRIES` is never reached and messages retry indefinitely.
 
 **Notification-service crashes on boot with `PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange'`**
 The queue already exists from before the DLQ upgrade, declared without dead-letter arguments, and RabbitMQ refuses to redeclare a queue with different arguments. This hits every environment that ran the pre-upgrade code — it is a migration step, not a bug. Check the depth first, then drop the queue so the new topology can be declared:
@@ -1068,7 +1072,6 @@ Anything still queued is lost, so drain it first if the count is non-zero. Resta
 
 Roughly the order I would actually do them in.
 
-**Fix the retry counter.** The `x-death` bug documented above means the parking queue never fills, which makes the whole DLQ pipeline decorative. One line.
 
 **Idempotency keys on handlers.** At-least-once delivery plus non-idempotent handlers means a retry re-sends notifications that already succeeded. Checking an event id against a small collection before processing would make replay safe, and would matter enormously if this pattern were ever reused for a payment.
 
