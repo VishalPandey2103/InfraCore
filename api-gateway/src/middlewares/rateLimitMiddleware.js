@@ -23,7 +23,6 @@ const {
 const buildLimiter = ({ max, windowSeconds, keyPrefix, keyResolver }) => {
     return async (req, res, next) => {
         // Fail-open: if Redis is unreachable we let the request through.
-        // See redisConfig.js for the reasoning behind this policy.
         if (!isRedisReady()) return next();
 
         const identity = keyResolver(req);

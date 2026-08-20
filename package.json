@@ -8,6 +8,7 @@
     "install:all": "npm install && npm --prefix services/user-service install && npm --prefix services/inventory-service install && npm --prefix services/booking-service install && npm --prefix services/notification-service install && npm --prefix api-gateway install"
   },
   "devDependencies": {
+    "autocannon": "^8.0.0",
     "concurrently": "^9.0.1"
   }
 }
